@@ -113,8 +113,11 @@ tolerates `ERR`; `wait MS` pauses; `{J}` is the selected joint;
 A macro stops at the first untolerated `ERR`; **OUTPUTS OFF**/**Freeze** cancel it.
 `/cmd?c=A;B;C` also runs several commands in one request (stops at first `ERR`).
 
-Optionally join an existing network so the phone keeps its internet and a
-computer on the same LAN can drive the robot. Over USB with outputs off:
+Phones often leave an AP without internet for another network mid-session
+(the console then reports `TimeoutError`). Joining an existing network avoids
+this, keeps the phone online and lets a computer on the same LAN drive the
+robot. `status` reports `up_s` and `reset` (e.g. `brownout`), and the page logs
+`ROBOT RESTARTED` when uptime goes backwards. Over USB with outputs off:
 
 ```text
 wifi join SSID PASSWORD     # no spaces; saved in NVS namespace sesame-net

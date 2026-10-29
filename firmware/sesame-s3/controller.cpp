@@ -6,6 +6,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
+#include <esp_system.h>
 #include <sys/socket.h>
 #include <Adafruit_PWMServoDriver.h>
 #include <Adafruit_SSD1306.h>
@@ -142,11 +143,25 @@ String exportCalibration() {
   }
   return out + "]}";
 }
+// Distinguishes "the phone left the AP" from "the robot restarted" (e.g. a
+// brownout when all servos first energise) after the web console loses contact.
+const char* resetReason() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "poweron";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic";
+    case ESP_RST_INT_WDT: case ESP_RST_TASK_WDT: case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_USB: return "usb";
+    default: return "other";
+  }
+}
 String status() {
   String out = "mode=" + String(int(gate.mode)) + " outputs=" + String(gate.enabled) +
     " hub=" + String(ready) + " fault=" + String(fault) + " owner=" + String(int(owner)) +
     " motion=" + String(motion ? motion->name : "none") + " sweep=" + String(sweeping) +
-    " hold=" + String(gate.held) + " profile=" + PULSE_PROFILE_ID + "\n";
+    " hold=" + String(gate.held) + " up_s=" + String(millis() / 1000) + " reset=" + resetReason() +
+    " profile=" + PULSE_PROFILE_ID + "\n";
   for (int j = 0; j < 8; ++j) if (gate.enabled & (1u << j)) {
     out += "CH" + String(gate.channel(j)) + " current=" + String(gate.current[j], 2) +
       " target=" + String(gate.target[j], 2) + " physical=" + String(gate.physical(j), 2) +
@@ -619,7 +634,7 @@ void setup() {
     if (netPrefs.isKey("pass")) staPass = netPrefs.getString("pass");
   }
   startWifi();
-  Serial.println("READY Sesame S3 calibration+controller; outputs OFF; help");
+  Serial.printf("READY Sesame S3 calibration+controller; outputs OFF; reset=%s; help\n", resetReason());
   Serial.printf("PROFILE %s neutral_us=%.2f manifest=%s\n", PULSE_PROFILE_ID, angleUs(NEUTRAL), MANIFEST_ID);
 }
 void loop() {

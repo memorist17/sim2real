@@ -46,7 +46,7 @@ const MODES=['OFF','Channel','Hornless','Joint','Assembly','Run','Reference'];
 const JOINTS=['L1','L2','L3','L4','R1','R2','R3','R4'];
 const MOTIONS='stand rest wave dance swim point pushup bow cute freaky worm shake shrug dead crab walk walk_backward turn_left turn_right'.split(' ');
 const DEFAULTS={'Hello':'?arm run\nmotion stand\nmotion wave\nmotion rest','Party':'?arm run\nmotion stand\nmotion dance\nmotion shake\nmotion rest'};
-let lock=Promise.resolve(), inflight=0, run=0, last={};
+let lock=Promise.resolve(), inflight=0, run=0, last={}, up=0;
 for(const j of JOINTS)$('#joint').add(new Option(j));
 $('#joint').value=localStorage.joint||'L1';$('#joint').onchange=e=>localStorage.joint=e.target.value;
 for(const m of MOTIONS)add('#motions',m,'?arm run\nmotion '+m);
@@ -66,22 +66,23 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function status(){const[,t]=await req('/status');const g=k=>(t.match(new RegExp(' '+k+'=(\\S+)'))||[])[1];
 last={mode:MODES[+(t.match(/^mode=(\d)/)||[])[1]]||'?',out:g('outputs'),motion:g('motion'),sweep:g('sweep'),hold:g('hold'),owner:g('owner'),
 sta:(t.match(/STA.* ip=(\S+)/)||[])[1]};
+const u=+g('up_s');if(u<up)say(`ROBOT RESTARTED (reset=${g('reset')}); outputs are OFF`);up=u;
 $('#st').textContent=`${last.hold==='1'?'HOLD ':''}${last.mode} outputs=${last.out} motion=${last.motion}${last.sweep==='1'?' sweeping':''}`+
 (last.sta&&last.sta!=='0.0.0.0'?`\nLAN http://${last.sta}  (${location.host})`:`\n${location.host}`);return last}
 // Safety commands bypass the request queue.
 async function stopAll(c){run++;say('> '+c);try{say(await (await fetch('/cmd?c='+c,{signal:AbortSignal.timeout(3000)})).text())}
-catch(e){say('ERR no reply: '+e.name+'; use BOOT')}}
+catch(e){say('ERR no reply: '+e.name+'; check phone is still on Sesame Wi-Fi. BOOT button stops the robot')}}
 async function macro(text){const id=++run, joint=$('#joint').value;
 const lines=text.replace(/\{J\}/g,joint).split(/[;\n]/).map(s=>s.trim()).filter(Boolean);
 for(let line of lines){if(id!==run)return say('(macro cancelled)');
 const ok_err=line[0]==='?';if(ok_err)line=line.slice(1).trim();
 const w=line.match(/^wait\s+(\d+)$/);if(w){await sleep(+w[1]);continue}
-say('> '+line);let ok,t;try{[ok,t]=await send(line)}catch(e){return say('ERR no reply ('+e.name+'); robot holds pose after 500 ms')}
+say('> '+line);let ok,t;try{[ok,t]=await send(line)}catch(e){return say('ERR no reply ('+e.name+'); phone left Sesame Wi-Fi? robot holds pose after 500 ms')}
 say(t);if(!ok&&!ok_err)return say('(macro stopped)');
 if(ok&&/^(motion|run|rest|sweep)\b/.test(line))for(let n=0;n<300&&id===run;n++){await sleep(250);
 const s=await status().catch(()=>({}));if(s.motion==='none'&&s.sweep==='0')break}}}
 // Heartbeat only while visible; hidden pages stop, the robot freezes and holds.
 setInterval(()=>{if(!document.hidden&&!inflight)send('heartbeat').catch(()=>{})},200);
-setInterval(()=>{if(!document.hidden)status().catch(()=>{$('#st').textContent='no connection to robot'})},1000);
+setInterval(()=>{if(!document.hidden)status().catch(()=>{$('#st').textContent='no connection: is the phone still on this robot\'s Wi-Fi?'})},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)status().catch(()=>{})});
 </script>)HTML";
