@@ -46,7 +46,7 @@ const MODES=['OFF','Channel','Hornless','Joint','Assembly','Run','Reference'];
 const JOINTS=['L1','L2','L3','L4','R1','R2','R3','R4'];
 const MOTIONS='stand rest wave dance swim point pushup bow cute freaky worm shake shrug dead crab walk walk_backward turn_left turn_right'.split(' ');
 const DEFAULTS={'Hello':'?arm run\nmotion stand\nmotion wave\nmotion rest','Party':'?arm run\nmotion stand\nmotion dance\nmotion shake\nmotion rest'};
-let lock=Promise.resolve(), inflight=0, run=0, last={}, up=0;
+let lock=Promise.resolve(), inflight=0, run=0, last={}, up=0, link=[];
 for(const j of JOINTS)$('#joint').add(new Option(j));
 $('#joint').value=localStorage.joint||'L1';$('#joint').onchange=e=>localStorage.joint=e.target.value;
 for(const m of MOTIONS)add('#motions',m,'?arm run\nmotion '+m);
@@ -59,16 +59,22 @@ function delMacro(){const m=mine();delete m[$('#mname').value.trim()];localStora
 drawMine();
 function say(t){if(t)log.textContent=(t+'\n'+log.textContent).slice(0,6000)}
 // One request at a time: the firmware serves a single client.
-function req(path,ms=3000){const p=lock.then(async()=>{inflight++;try{const r=await fetch(path,{signal:AbortSignal.timeout(ms)});
-return [r.ok,await r.text()]}finally{inflight--}});lock=p.catch(()=>{});return p}
+// Last 30 request round trips (ms; -1 = failed) for the link line.
+function note(ms){link.push(ms);if(link.length>30)link.shift()}
+function req(path,ms=3000){const p=lock.then(async()=>{inflight++;const t0=performance.now();
+try{const r=await fetch(path,{signal:AbortSignal.timeout(ms)});const t=await r.text();note(performance.now()-t0);return [r.ok,t]}
+catch(e){note(-1);throw e}finally{inflight--}});lock=p.catch(()=>{});return p}
+function linkText(){const ok=link.filter(x=>x>=0);
+return `link: fail ${link.length-ok.length}/${link.length}`+(ok.length?` rtt avg ${Math.round(ok.reduce((a,b)=>a+b,0)/ok.length)} max ${Math.round(Math.max(...ok))} ms`:'')}
 const send=c=>req('/cmd?c='+encodeURIComponent(c));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function status(){const[,t]=await req('/status');const g=k=>(t.match(new RegExp(' '+k+'=(\\S+)'))||[])[1];
 last={mode:MODES[+(t.match(/^mode=(\d)/)||[])[1]]||'?',out:g('outputs'),motion:g('motion'),sweep:g('sweep'),hold:g('hold'),owner:g('owner'),
 sta:(t.match(/STA.* ip=(\S+)/)||[])[1]};
-const u=+g('up_s');if(u<up)say(`ROBOT RESTARTED (reset=${g('reset')}); outputs are OFF`);up=u;
+last.rssi=g('ap_rssi');last.drops=g('http_drops');const u=+g('up_s');if(u<up)say(`ROBOT RESTARTED (reset=${g('reset')}); outputs are OFF`);up=u;
 $('#st').textContent=`${last.hold==='1'?'HOLD ':''}${last.mode} outputs=${last.out} motion=${last.motion}${last.sweep==='1'?' sweeping':''}`+
-(last.sta&&last.sta!=='0.0.0.0'?`\nLAN http://${last.sta}  (${location.host})`:`\n${location.host}`);return last}
+(last.sta&&last.sta!=='0.0.0.0'?`\nLAN http://${last.sta}  (${location.host})`:`\n${location.host}`)+
+`\n${linkText()} | phone rssi ${last.rssi} dBm | drops ${last.drops}`;return last}
 // Safety commands bypass the request queue.
 async function stopAll(c){run++;say('> '+c);try{say(await (await fetch('/cmd?c='+c,{signal:AbortSignal.timeout(3000)})).text())}
 catch(e){say('ERR no reply: '+e.name+'; check phone is still on Sesame Wi-Fi. BOOT button stops the robot')}}
@@ -83,6 +89,6 @@ if(ok&&/^(motion|run|rest|sweep)\b/.test(line))for(let n=0;n<300&&id===run;n++){
 const s=await status().catch(()=>({}));if(s.motion==='none'&&s.sweep==='0')break}}}
 // Heartbeat only while visible; hidden pages stop, the robot freezes and holds.
 setInterval(()=>{if(!document.hidden&&!inflight)send('heartbeat').catch(()=>{})},200);
-setInterval(()=>{if(!document.hidden)status().catch(()=>{$('#st').textContent='no connection: is the phone still on this robot\'s Wi-Fi?'})},1000);
+setInterval(()=>{if(!document.hidden)status().catch(()=>{$('#st').textContent='no connection: is the phone still on this robot\'s Wi-Fi?\n'+linkText()})},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)status().catch(()=>{})});
 </script>)HTML";

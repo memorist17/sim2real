@@ -44,6 +44,7 @@ unsigned motionIndex = 0;
 uint32_t waitStarted = 0;
 bool waiting = false;
 bool sweeping = false;
+uint32_t httpDrops = 0; // web requests not fully received in time
 float sweepLow = 0, sweepHigh = 0;
 unsigned sweepStage = 0;
 
@@ -175,12 +176,17 @@ String wifiStatus() {
   esp_err_t b = esp_wifi_get_country(&cc);
   esp_err_t c = esp_wifi_get_max_tx_power(&tx);
   char countryText[4] = {cc.cc[0], cc.cc[1], cc.cc[2], 0};
+  // Signal of each phone on our AP as the robot hears it (link diagnosis).
+  wifi_sta_list_t peers = {}; String rssi;
+  if (esp_wifi_ap_get_sta_list(&peers) == ESP_OK)
+    for (int i = 0; i < peers.num; ++i) rssi += (i ? "," : "") + String(peers.sta[i].rssi);
   String sta = staSsid.length() ? " STA ssid=" + staSsid + " connected=" + String(WiFi.isConnected()) +
     " ip=" + WiFi.localIP().toString() + " rssi=" + String(WiFi.RSSI()) + " mdns=" + hostname + ".local" : " STA none";
   return "AP ok=" + String(apOK) + " ssid=" + ssid + " ip=" + WiFi.softAPIP().toString() +
     " channel=" + String(config.ap.channel) + " hidden=" + String(config.ap.ssid_hidden) +
     " country=" + String(countryText) + " tx_dbm=" + String(tx / 4.0, 2) +
-    " clients=" + String(WiFi.softAPgetStationNum()) + " get_errors=" +
+    " clients=" + String(WiFi.softAPgetStationNum()) + " ap_rssi=" + (rssi.length() ? rssi : "-") +
+    " http_drops=" + String(httpDrops) + " get_errors=" +
     String(int(a)) + "," + String(int(b)) + "," + String(int(c)) + "\n" + sta;
 }
 void startWifi() {
@@ -458,9 +464,13 @@ void httpService() {
     if (!client) return;
     client.setTimeout(1); request = ""; response = ""; responseSent = 0; requestStarted = millis();
   }
-  // 250 ms to receive the request; up to 1 s to drain a large page to a phone.
+  // 600 ms to receive the request (a weak link needs TCP retransmits); up to
+  // 1.5 s to drain a page. Nonblocking either way: only other clients wait.
   const uint32_t age = millis() - requestStarted;
-  if ((!response.length() && age > 250) || age > 1000 || request.length() > 1024) { client.stop(); return; }
+  if ((!response.length() && age > 600) || age > 1500 || request.length() > 1024) {
+    if (!response.length()) ++httpDrops;
+    client.stop(); return;
+  }
   if (response.length()) {
     size_t remaining = response.length() - responseSent;
     int sent = ::send(client.fd(), response.c_str() + responseSent, remaining > 512 ? 512 : remaining, MSG_DONTWAIT);
