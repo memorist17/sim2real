@@ -108,13 +108,14 @@ Assembly centring ignores trims, even if an old calibration is saved.
 ## 4. Identify the channels; test one joint at a time
 
 Use battery-only Wi-Fi (join `Sesame-S3-XXXX`, password `sesame123`, open
-`http://192.168.4.1`, tick **Keep heartbeat**) or an instructor-verified isolated
+`http://192.168.4.1`; heartbeats are automatic while the page is visible) or an instructor-verified isolated
 USB bench supply arrangement. **Do not plug ordinary USB into the live battery
 assembly.** If Wi-Fi fails and isolation is unverified, stop after the BOOT
 centre step; diagnosis can continue USB-only with servo V+ off.
 
-In the USB console `:live` enables heartbeats. In the web console use the
-checkbox instead; the other commands are identical. Starting with CH0:
+In the USB console `:live` enables heartbeats. The web console sends them
+while the page is visible (switching apps freezes and holds the joint, see
+`firmware/README.md`); the other commands are identical. Starting with CH0:
 
 ```text
 arm channel 0

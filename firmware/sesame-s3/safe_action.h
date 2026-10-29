@@ -65,6 +65,12 @@ struct Calibration {
 
 enum class Mode { Off, Channel, Hornless, Joint, Assembly, Run, Reference };
 
+// Firmware-local link-loss policy (not a manifest value). After WATCHDOG_MS
+// without an owner message the gate freezes every target where it is and stops
+// accepting targets until the owner speaks again; torque is held so a phone
+// switching apps does not drop the robot. Outputs go OFF after HOLD_MS.
+constexpr uint32_t HOLD_MS = 600000;
+
 // All PWM authority passes through this gate, including raw bench commands.
 // First enable cannot be slew-limited from an unknown physical shaft position.
 // It always starts at neutral; subsequent targets are slew-limited.
@@ -76,23 +82,25 @@ class SafeAction {
   float current[8] = {}, target[8] = {};
   uint8_t enabled = 0;
   uint32_t lastHeartbeat = 0, lastStep = 0;
-  bool timedOut = false;
+  bool timedOut = false, held = false;
   bool active() const { return mode != Mode::Off; }
-  void off() { mode = Mode::Off; enabled = 0; selected = -1; }
-  void heartbeat(uint32_t now) { if (active()) lastHeartbeat = now; }
+  void off() { mode = Mode::Off; enabled = 0; selected = -1; held = false; }
+  // Only owner messages call this directly; internal sequences reach it through
+  // set(), which refuses while held, so they cannot end a link-loss hold.
+  void heartbeat(uint32_t now) { if (active()) { lastHeartbeat = now; held = false; } }
   bool arm(Mode m, int index, uint32_t now) {
     if (active() || m == Mode::Off || !cal.valid()) return false;
     if (m == Mode::Run && !cal.complete()) return false;
     if ((m == Mode::Channel || m == Mode::Hornless || m == Mode::Joint) && (index < 0 || index > 7)) return false;
     if (m == Mode::Joint && cal.channel[index] < 0) return false;
-    mode = m; selected = index; timedOut = false;
+    mode = m; selected = index; timedOut = false; held = false;
     lastHeartbeat = lastStep = now;
     for (int j = 0; j < 8; ++j) current[j] = target[j] = NEUTRAL;
     enabled = 0; // arm alone NEVER emits pulses
     return true;
   }
   bool set(int j, float degrees, uint32_t now) {
-    if (!active() || !std::isfinite(degrees) || j < 0 || j > 7) return false;
+    if (!active() || held || !std::isfinite(degrees) || j < 0 || j > 7) return false;
     if (mode == Mode::Assembly || mode == Mode::Reference) return false;
     if (mode != Mode::Run && j != selected) return false;
     float bound;
@@ -106,7 +114,7 @@ class SafeAction {
     return true;
   }
   bool centre(uint32_t now) {
-    if (mode != Mode::Assembly) return false;
+    if (mode != Mode::Assembly || held) return false;
     for (int j = 0; j < 8; ++j) current[j] = target[j] = NEUTRAL;
     enabled = 255; heartbeat(now); return true;
   }
@@ -116,8 +124,11 @@ class SafeAction {
   }
   bool step(uint32_t now) {
     if (!active()) return false;
-    if (uint32_t(now - lastHeartbeat) > WATCHDOG_MS) {
-      off(); timedOut = true; return false;
+    const uint32_t idle = now - lastHeartbeat;
+    if (idle > HOLD_MS) { off(); timedOut = true; return false; }
+    if (idle > WATCHDOG_MS && !held) {
+      for (int j = 0; j < 8; ++j) target[j] = current[j];
+      held = true;
     }
     // Never turn a stalled loop into a large catch-up jump.
     uint32_t dt = now - lastStep; if (dt > 20) dt = 20;
