@@ -43,13 +43,8 @@ class Robot:
         return " motion=none " not in text or " sweep=1 " in text
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--host", required=True, help="robot address, e.g. sesame-s3-8b2c.local or 192.168.4.1")
-    parser.add_argument("--motion-timeout", type=float, default=75.0)
-    parser.add_argument("commands", nargs="+")
-    args = parser.parse_args()
-    robot = Robot(args.host)
+def start_heartbeat(robot):
+    """Heartbeat every 200 ms until the returned event is set."""
     done = threading.Event()
 
     def beat():
@@ -60,27 +55,47 @@ def main():
                 pass
 
     threading.Thread(target=beat, daemon=True).start()
-    lines = [p.strip() for arg in args.commands for p in re.split(r"[;\n]", arg) if p.strip()]
+    return done
+
+
+def split_lines(*commands):
+    return [p.strip() for arg in commands for p in re.split(r"[;\n]", arg) if p.strip()]
+
+
+def run_lines(robot, lines, motion_timeout=75.0, sleep=time.sleep):
+    """Run macro lines in order; 0 on success, 1 at the first untolerated ERR or timeout."""
+    for line in lines:
+        tolerate = line.startswith("?")
+        line = line.lstrip("?").strip()
+        if m := re.fullmatch(r"wait\s+(\d+)", line):
+            sleep(int(m[1]) / 1000)
+            continue
+        ok, text = robot.command(line)
+        print(f"> {line}\n{text}" if text else f"> {line}", flush=True)
+        if not ok and not tolerate:
+            return 1
+        if ok and WAITS.match(line):
+            deadline = time.monotonic() + motion_timeout
+            sleep(0.25)
+            while robot.busy():
+                if time.monotonic() > deadline:
+                    print("ERR motion timeout; sending stop", flush=True)
+                    robot.command("stop")
+                    return 1
+                sleep(0.25)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--host", required=True, help="robot address, e.g. sesame-s3-8b2c.local or 192.168.4.1")
+    parser.add_argument("--motion-timeout", type=float, default=75.0)
+    parser.add_argument("commands", nargs="+")
+    args = parser.parse_args()
+    robot = Robot(args.host)
+    done = start_heartbeat(robot)
     try:
-        for line in lines:
-            tolerate = line.startswith("?")
-            line = line.lstrip("?").strip()
-            if m := re.fullmatch(r"wait\s+(\d+)", line):
-                time.sleep(int(m[1]) / 1000)
-                continue
-            ok, text = robot.command(line)
-            print(f"> {line}\n{text}" if text else f"> {line}", flush=True)
-            if not ok and not tolerate:
-                return 1
-            if ok and WAITS.match(line):
-                deadline = time.monotonic() + args.motion_timeout
-                time.sleep(0.25)
-                while robot.busy():
-                    if time.monotonic() > deadline:
-                        print("ERR motion timeout; sending stop", flush=True)
-                        robot.command("stop")
-                        return 1
-                    time.sleep(0.25)
+        return run_lines(robot, split_lines(*args.commands), args.motion_timeout)
     except KeyboardInterrupt:
         print("> off (interrupted)", flush=True)
         robot.command("off")
@@ -90,7 +105,6 @@ def main():
         return 2
     finally:
         done.set()
-    return 0
 
 
 if __name__ == "__main__":

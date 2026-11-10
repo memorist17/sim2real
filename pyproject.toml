@@ -21,6 +21,9 @@ dev = [
     "scipy>=1.18.0",
     "trimesh>=4.12.2",
 ]
+radio = [
+    "anthropic>=2.7.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
