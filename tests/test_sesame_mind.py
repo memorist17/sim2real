@@ -163,6 +163,9 @@ def test_mind_survives_bad_designs_and_reflex_outages(tmp_path):
     entry = mind.handle(sm.Moment("chat", "新しいのを作って"))
     assert entry["did"] == sm.NONE and "design failed" in entry["note"]
     assert len(spine.played) == 1
+    mind.designer.ruminate = lambda *a: (_ for _ in ()).throw(RuntimeError("offline"))
+    mind.ruminate()  # logged, not raised
+    assert mind.memory.notes == ""
 
 
 def test_spine_dry_run_and_streaming():

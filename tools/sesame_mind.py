@@ -444,7 +444,11 @@ class Mind:
 
     def ruminate(self):
         if self.designer and self.memory.recent():
-            self.memory.notes = self.designer.ruminate(self.memory.recent(50), self.memory.notes)
+            try:
+                self.memory.notes = self.designer.ruminate(self.memory.recent(50), self.memory.notes)
+            except Exception as e:  # an outage must not stop the robot listening
+                print(f"(ruminate) {e}", file=sys.stderr)
+                return
             print("💭 ruminated:\n" + self.memory.notes, flush=True)
 
 
