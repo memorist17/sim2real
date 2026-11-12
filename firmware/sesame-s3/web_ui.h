@@ -25,6 +25,10 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <div class="top"><button class="off" onclick="stopAll('off')">OUTPUTS OFF</button>
 <button class="fr" onclick="stopAll('stop')">Freeze</button></div></header>
 <section><h2>Motions (auto arm run)</h2><div class="g" id="motions"></div></section>
+<section><h2>Mind (chat via PC, tools/sesame_mind.py --serve)</h2>
+<input id="mind" placeholder="http://PC-IP:8765" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">
+<form class="row" onsubmit="event.preventDefault();chat()"><input id="msg" placeholder="話しかける / ○○みたいな動きを作って">
+<button style="flex:0 0 5em">Say</button></form><pre id="mlog"></pre></section>
 <section><h2>Calibration</h2><div class="row"><select id="joint"></select>
 <button onclick="macro('off;arm joint {J}')">Arm joint</button></div><div class="g">
 <button onclick="macro('angle 90')">Angle 90</button><button onclick="macro('sweep 75 105')">Sweep 75–105</button>
@@ -58,6 +62,15 @@ function drawMine(){$('#mine').textContent='';for(const[k,v]of Object.entries(mi
 function saveMacro(){const m=mine(),k=$('#mname').value.trim();if(!k)return;m[k]=$('#mbody').value;localStorage.macros=JSON.stringify(m);drawMine()}
 function delMacro(){const m=mine();delete m[$('#mname').value.trim()];localStorage.macros=JSON.stringify(m);drawMine()}
 drawMine();
+// Mind: chat goes to the PC, which picks or designs a motion and drives this robot itself.
+const mindURL=()=>$('#mind').value.trim().replace(/\/$/,'');
+$('#mind').value=localStorage.mind||'';$('#mind').onchange=()=>localStorage.mind=mindURL();
+async function chat(){const m=mindURL(),t=$('#msg').value.trim();if(!m||!t)return;$('#msg').value='';
+try{await fetch(m+'/say',{method:'POST',body:t,signal:AbortSignal.timeout(3000)})}
+catch(e){$('#mlog').textContent='ERR mind not reachable ('+e.name+'): is the PC on the same Wi-Fi and sesame_mind running?'}}
+setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
+try{const l=await (await fetch(m+'/log',{signal:AbortSignal.timeout(2000)})).json();
+$('#mlog').textContent=l.reverse().map(e=>`${e.source}「${e.text}」→ ${e.did} (${e.by} ${e.reflex_ms}ms) ${e.note}`).join('\n')}catch(e){}},1500);
 function say(t){if(t)log.textContent=(t+'\n'+log.textContent).slice(0,6000)}
 // One request at a time: the firmware serves a single client.
 // Last 30 request round trips (ms; -1 = failed) for the link line.
