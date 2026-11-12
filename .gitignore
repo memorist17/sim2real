@@ -1,5 +1,7 @@
 # Chi local state and sensitive artifacts (runtime state lives under ~/.chi)
 .chi/
+# tools/sesame_mind.py memory and learned motions
+.sesame-mind/
 
 # Python
 .venv/
