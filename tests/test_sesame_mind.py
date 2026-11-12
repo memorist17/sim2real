@@ -194,3 +194,22 @@ def test_utterances_split_on_silence_and_flag_onsets():
     assert len(speech) == 2
     assert len(speech[0]) >= 0.5 * sm.RATE * 2  # whole loud stretch plus its silent tail
     assert sounds == [pytest.approx(5000, rel=0.05)]  # one per bang; the 1000 RMS voice is not one
+
+
+def test_chat_server_accepts_posts_from_the_robot_page(tmp_path):
+    import queue
+    import urllib.request
+    moments = queue.Queue()
+    mind = sm.Mind(sm.RuleReflex(), sm.Library(), sm.Memory(tmp_path), FakeSpine())
+    server = sm.serve(0, mind, moments)
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        req = urllib.request.Request(base + "/say", "wave".encode(), method="POST",
+                                     headers={"Origin": "http://sesame-s3-8b2c.local", "Content-Type": "text/plain"})
+        with urllib.request.urlopen(req) as r:
+            assert r.status == 202 and r.headers["Access-Control-Allow-Origin"] == "*"
+        assert moments.get_nowait() == sm.Moment("chat", "wave")
+        with urllib.request.urlopen(base + "/log") as r:
+            assert r.headers["Access-Control-Allow-Origin"] == "*" and json.loads(r.read()) == []
+    finally:
+        server.shutdown()

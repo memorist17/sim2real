@@ -511,6 +511,8 @@ def serve(port, mind, moments):
             self.send_response(code)
             self.send_header("Content-Type", kind + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
+            # the robot's own page (another origin) posts chat here; plain-text POSTs need no preflight
+            self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(data)
 
