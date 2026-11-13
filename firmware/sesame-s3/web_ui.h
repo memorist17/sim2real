@@ -20,6 +20,7 @@ button:active{background:#aab}.off{background:#d22;color:#fff;font-weight:bold}.
 input,select,textarea{font:inherit;box-sizing:border-box}textarea{width:100%;height:7em}
 .row{display:flex;gap:6px;margin-bottom:6px}.row>*{flex:1}
 pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40vh;overflow:auto}
+.cf label{display:flex;align-items:center;gap:6px;margin:4px 0}.cf label>input:not([type=checkbox]),.cf select{flex:1;min-width:0}
 </style>
 <header><div id="st">connecting…</div><div id="pw"></div>
 <div class="top"><button class="off" onclick="stopAll('off')">OUTPUTS OFF</button>
@@ -28,7 +29,21 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <section><h2>Mind (chat via PC, tools/sesame_mind.py --serve)</h2>
 <input id="mind" placeholder="http://PC-IP:8765" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">
 <form class="row" onsubmit="event.preventDefault();chat()"><input id="msg" placeholder="話しかける / ○○みたいな動きを作って">
-<button style="flex:0 0 5em">Say</button></form><pre id="mlog"></pre></section>
+<button style="flex:0 0 5em">Say</button></form><pre id="mlog"></pre>
+<details id="mset"><summary>Settings (saved on the PC)</summary><div class="cf">
+<label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
+<label>反射のLLM<select data-k="reflex_brain"><option value="claude">Claude<option value="local">ローカル</select></label>
+<label>動き作り・反芻<select data-k="designer"><option value="claude">Claude<option value="local">ローカル<option value="none">なし</select></label>
+<label>Claude key <i id="anthropic_key_set"></i></label><input type="password" data-k="anthropic_key" placeholder="空欄 = 変更しない" style="width:100%">
+<label>Claude（動き作り）<select data-k="claude_model"><option>claude-opus-5-5<option>claude-sonnet-5-5<option>claude-haiku-5-5</select></label>
+<label>Claude（反射）<select data-k="claude_reflex_model"><option>claude-opus-5-5<option>claude-sonnet-5-5<option>claude-haiku-5-5</select></label>
+<label>Jev URL<input data-k="jev_url" autocapitalize="off" spellcheck="false"></label>
+<label>TypeSafe key <i id="typesafe_key_set"></i></label><input type="password" data-k="typesafe_key" placeholder="空欄 = 変更しない" style="width:100%">
+<label>ローカルURL<input data-k="local_url" autocapitalize="off" spellcheck="false"></label>
+<label>ローカルモデル<select data-k="local_model" id="lmodels"></select></label>
+<label><input type="checkbox" data-k="live">このロボットを動かす（オフ = 試し）</label>
+</div><div class="row"><button onclick="mcfg()">Reload</button><button onclick="mcfg(1)">Save</button></div>
+<pre id="mst"></pre></details></section>
 <section><h2>Calibration</h2><div class="row"><select id="joint"></select>
 <button onclick="macro('off;arm joint {J}')">Arm joint</button></div><div class="g">
 <button onclick="macro('angle 90')">Angle 90</button><button onclick="macro('sweep 75 105')">Sweep 75–105</button>
@@ -68,6 +83,21 @@ $('#mind').value=localStorage.mind||'';$('#mind').onchange=()=>localStorage.mind
 async function chat(){const m=mindURL(),t=$('#msg').value.trim();if(!m||!t)return;$('#msg').value='';
 try{await fetch(m+'/say',{method:'POST',body:t,signal:AbortSignal.timeout(3000)})}
 catch(e){$('#mlog').textContent='ERR mind not reachable ('+e.name+'): is the PC on the same Wi-Fi and sesame_mind running?'}}
+// Settings live on the PC; keys are write-only (only "set" comes back).
+async function mcfg(save){const m=mindURL();if(!m)return $('#mst').textContent='enter the mind URL first';let c;
+try{if(save){const o={host:last.sta&&last.sta!=='0.0.0.0'?last.sta:location.hostname};
+for(const e of document.querySelectorAll('[data-k]')){if(e.type==='password'){if(e.value)o[e.dataset.k]=e.value;e.value=''}
+else o[e.dataset.k]=e.type==='checkbox'?e.checked:e.value}
+c=await (await fetch(m+'/config',{method:'POST',body:JSON.stringify(o),signal:AbortSignal.timeout(8000)})).json()}
+else c=await (await fetch(m+'/config',{signal:AbortSignal.timeout(5000)})).json()}
+catch(e){return $('#mst').textContent='ERR mind not reachable ('+e.name+')'}
+const s=$('#lmodels');s.textContent='';for(const x of new Set([...(c.local_models||[]),c.local_model].filter(Boolean)))s.add(new Option(x));
+if(!s.options.length)s.add(new Option('(no local server)',''));
+for(const e of document.querySelectorAll('[data-k]'))if(e.type==='checkbox')e.checked=!!c[e.dataset.k];else if(e.type!=='password')e.value=c[e.dataset.k]??'';
+for(const k of['anthropic_key','typesafe_key'])$('#'+k+'_set').textContent=c[k+'_set']?'✓ set':'not set';
+const st=c.status||{};$('#mst').textContent=`now: reflex ${st.reflex} | designer ${st.designer} | robot ${st.robot||'dry run'}`+
+(st.error||c.error?'\nERR '+(c.error||st.error):'')}
+$('#mset').ontoggle=e=>{if(e.target.open)mcfg()};
 setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
 try{const l=await (await fetch(m+'/log',{signal:AbortSignal.timeout(2000)})).json();
 $('#mlog').textContent=l.reverse().map(e=>`${e.source}「${e.text}」→ ${e.did} (${e.by} ${e.reflex_ms}ms) ${e.note}`).join('\n')}catch(e){}},1500);
