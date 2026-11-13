@@ -213,3 +213,72 @@ def test_chat_server_accepts_posts_from_the_robot_page(tmp_path):
             assert r.headers["Access-Control-Allow-Origin"] == "*" and json.loads(r.read()) == []
     finally:
         server.shutdown()
+
+
+def test_settings_validate_persist_and_hide_keys(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    st = sm.Settings(tmp_path)
+    assert st.values["reflex"] == "rules" and not st.public()["anthropic_key_set"]
+    st.update({"reflex": "jev", "anthropic_key": "sk-secret", "live": 1, "unknown": "x"})
+    with pytest.raises(ValueError):
+        st.update({"designer": "gpt"})
+    st.update({"anthropic_key": ""})  # empty keeps the stored key
+    again = sm.Settings(tmp_path)
+    view = again.public()
+    assert view["reflex"] == "jev" and view["live"] is True and "unknown" not in view
+    assert view["anthropic_key_set"] and "sk-secret" not in json.dumps(view)
+    assert (tmp_path / "config.json").stat().st_mode & 0o777 == 0o600
+    again.update({"anthropic_key": None})
+    assert not again.public()["anthropic_key_set"]
+
+
+def test_build_reports_missing_keys_and_falls_back(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    st = sm.Settings(tmp_path)
+    mind = sm.Mind(sm.RuleReflex(), sm.Library(), sm.Memory(), sm.Spine(M))
+    status = mind.configure(st)  # designer claude without a key
+    assert status["designer"] == "none" and "key" in status["error"] and status["reflex"] == "rules"
+    st.update({"reflex": "llm", "reflex_brain": "local", "designer": "local", "local_model": "tiny"})
+    status = mind.configure(st)
+    assert (status["reflex"], status["designer"], status["error"]) == ("llm:local", "local", "")
+    st.update({"reflex": "jev", "jev_url": "http://localhost:9/v1/systemone"})
+    assert mind.configure(st)["reflex"] == "jev" and mind.reflex.url.startswith("http://localhost:9")
+
+
+def test_local_brain_and_llm_reflex():
+    sent = []
+
+    def post(body):
+        sent.append(body)
+        return {"choices": [{"message": {"content": 'Sure! {"action": "wave", "intensity": 2, "addressed": 0.7}'}}]}
+
+    brain = sm.LocalBrain("http://localhost:8080/v1/", "tiny", post=post)
+    d = sm.LLMReflex(brain).decide(sm.Moment("chat", "手を振って"), sm.Library())
+    assert (d.action, d.intensity, d.addressed, d.by) == ("wave", 1.0, 0.7, "llm:local")
+    rf = sent[0]["response_format"]["json_schema"]
+    assert sent[0]["model"] == "tiny" and sm.NEW in rf["schema"]["properties"]["action"]["enum"]
+    assert sm.local_models("http://127.0.0.1:9/v1") == []  # nothing listening
+
+
+def test_config_endpoint_round_trip(tmp_path, monkeypatch):
+    import queue
+    import urllib.request
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    mind = sm.Mind(sm.RuleReflex(), sm.Library(), sm.Memory(tmp_path), sm.Spine(M))
+    mind.configure(sm.Settings(tmp_path))
+    server = sm.serve(0, mind, queue.Queue())
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        body = json.dumps({"designer": "none", "typesafe_key": "ts-secret", "local_url": "http://127.0.0.1:9/v1"})
+        with urllib.request.urlopen(urllib.request.Request(base + "/config", body.encode(), method="POST")) as r:
+            view = json.loads(r.read())
+        assert view["typesafe_key_set"] and "ts-secret" not in json.dumps(view)
+        assert view["status"] == {"reflex": "rules", "designer": "none", "robot": "", "error": ""}
+        assert view["local_models"] == []
+        bad = urllib.request.Request(base + "/config", b'{"reflex": "psychic"}', method="POST")
+        with pytest.raises(urllib.error.HTTPError) as e:
+            urllib.request.urlopen(bad)
+        assert e.value.code == 400
+    finally:
+        server.shutdown()

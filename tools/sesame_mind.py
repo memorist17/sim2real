@@ -6,14 +6,21 @@
     chat page / stdin ──────────────────┴─▶ reflex ─▶ library ─▶ spine ─▶ robot
                                              │ "new"     ▲
                                              ▼           │
-                                         designer (Claude) ┘
-    memory.jsonl ◀─ every moment;   idle ─▶ ruminate (Claude) ─▶ notes.md
+                                         designer (LLM) ┘
+    memory.jsonl ◀─ every moment;   idle ─▶ ruminate (LLM) ─▶ notes.md
 
 The reflex picks a library entry, an intensity and whether the speech was
-addressed to the robot. Reflexes: `rules` (offline keywords, default) or `jev`
-(TypeSafe System One; point --jev-url at a local-jev server for the edge). The
-designer (Claude) only runs for new motions; it writes a small spec that the
-spine expands into `pose` frames, so a learned motion replays without any model.
+addressed to the robot: `rules` (offline keywords), `jev` (TypeSafe System One;
+point the Jev URL at a local-jev server for the edge) or `llm` (Claude or a
+local model). The designer (Claude or a local model) only runs for new motions;
+it writes a small spec that the spine expands into `pose` frames, so a learned
+motion replays without any model. Local models are any OpenAI-compatible server
+on this computer, e.g. `llama-server -hf ggml-org/gemma-3-4b-it-GGUF` (port 8080)
+or Ollama (http://localhost:11434/v1).
+
+Settings (backends, models, API keys, which robot to drive) live in
+.sesame-mind/config.json and can be changed while running: GET/POST /config,
+used by the Mind panel on the robot's own page. Keys are never sent back.
 
 Specs are angles in internal degrees relative to a manifest pose (`base`):
 
@@ -26,7 +33,7 @@ Frames are clamped to the manifest soft limits; the firmware applies its own
 clamps and rate limit on top. Without --host nothing moves (dry run).
 
     uv run --group radio python tools/sesame_mind.py --text
-    uv run --group radio python tools/sesame_mind.py --serve 8765 --host sesame-s3-8b2c.local
+    uv run --group radio python tools/sesame_mind.py --serve 8765    # then configure from the robot page
     uv run --group radio python tools/sesame_mind.py --mic --whisper-model ggml-small.bin \\
         --serve 8765 --reflex jev --host sesame-s3-8b2c.local
 """
@@ -323,17 +330,20 @@ def spec_of(design):
     return design["name"], design["about"], spec
 
 
-class ClaudeDesigner:
-    def __init__(self, manifest, model="claude-opus-5-5", effort="low"):
+class ClaudeBrain:
+    by = "claude"
+
+    def __init__(self, key=None, model="claude-opus-5-5", effort="low"):
         try:
             import anthropic
         except ImportError:
-            sys.exit("sesame_mind: the `anthropic` package is required (uv run --group radio ...)")
-        self.client = anthropic.Anthropic()
+            raise ValueError("the `anthropic` package is missing (uv run --group radio ...)")
+        if not (key or os.environ.get("ANTHROPIC_API_KEY")):
+            raise ValueError("no Claude API key")
+        self.client = anthropic.Anthropic(api_key=key) if key else anthropic.Anthropic()
         self.model, self.effort = model, effort
-        self.schema = design_schema(manifest)
 
-    def _ask(self, system, user, schema=None):
+    def ask(self, system, user, schema=None):
         fmt = {"format": {"type": "json_schema", "schema": schema}} if schema else {}
         r = self.client.beta.messages.create(
             model=self.model, max_tokens=4000, betas=["server-side-fallback-2026-07-01"], fallbacks="default",
@@ -343,14 +353,162 @@ class ClaudeDesigner:
             raise RuntimeError(f"stop_reason={r.stop_reason}")
         return next(b.text for b in r.content if b.type == "text")
 
+
+def _http_json(url, body=None, timeout=60.0):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read())
+
+
+def local_models(url, timeout=1.0):
+    """Model ids served at an OpenAI-compatible URL; [] when nothing answers."""
+    try:
+        return [m["id"] for m in _http_json(url.rstrip("/") + "/models", timeout=timeout)["data"]]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+class LocalBrain:
+    """OpenAI-compatible server on this computer: llama.cpp `llama-server`, Ollama (/v1), LM Studio, MLX."""
+    by = "local"
+
+    def __init__(self, url, model="", timeout=60.0, post=None):
+        self.url, self.model, self.timeout = url.rstrip("/"), model, timeout
+        self.post = post or (lambda body: _http_json(self.url + "/chat/completions", body, self.timeout))
+
+    def ask(self, system, user, schema=None):
+        body = {"model": self.model, "temperature": 0.7,
+                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+        if schema:
+            body["response_format"] = {"type": "json_schema",
+                                       "json_schema": {"name": "answer", "strict": True, "schema": schema}}
+        text = self.post(body)["choices"][0]["message"]["content"]
+        if schema and not text.lstrip().startswith("{"):  # small models sometimes wrap JSON in prose
+            text = text[text.index("{"): text.rindex("}") + 1]
+        return text
+
+
+class Designer:
+    """New motions and rumination from any brain."""
+
+    def __init__(self, brain, manifest):
+        self.brain, self.schema = brain, design_schema(manifest)
+        self.by = brain.by
+
     def design(self, moment, library, notes=""):
         user = (f"メモ:\n{notes or '（まだない）'}\n\n既にある動き: {', '.join(library.names())}\n\n"
                 f"聞こえたこと（{moment.source}）:「{moment.text}」")
-        return spec_of(json.loads(self._ask(DESIGN_SYSTEM, user, self.schema)))
+        return spec_of(json.loads(self.brain.ask(DESIGN_SYSTEM, user, self.schema)))
 
     def ruminate(self, recent, notes=""):
         events = "\n".join(json.dumps(e, ensure_ascii=False) for e in recent)
-        return self._ask(RUMINATE_SYSTEM, f"以前のメモ:\n{notes or '（まだない）'}\n\n最近の出来事:\n{events}")
+        return self.brain.ask(RUMINATE_SYSTEM, f"以前のメモ:\n{notes or '（まだない）'}\n\n最近の出来事:\n{events}")
+
+
+REFLEX_SYSTEM = """\
+あなたはロボット「セサミ」の反射です。聞こえたことに対して、今やる動きを一つ選んでください。
+new = 新しい動きを作る（「〜みたいな動きを作って」など）、none = 何もしない。
+intensity は 0〜1 の勢い、addressed はセサミ自身に話しかけられた確率（0〜1）。
+"""
+
+
+class LLMReflex:
+    def __init__(self, brain):
+        self.brain, self.by = brain, f"llm:{brain.by}"
+
+    def decide(self, moment, library, notes=""):
+        options = library.names() + [NEW, NONE]
+        schema = {"type": "object", "additionalProperties": False, "required": ["action", "intensity", "addressed"],
+                  "properties": {"action": {"type": "string", "enum": options},
+                                 "intensity": {"type": "number"}, "addressed": {"type": "number"}}}
+        user = (f"動き: {json.dumps(library.menu(), ensure_ascii=False)}\nメモ: {notes[-800:]}\n"
+                f"聞こえたこと（{moment.source}, 音量 {moment.loudness:.0f}{', 急な音' if moment.onset else ''}）:"
+                f"「{moment.text}」")
+        d = json.loads(self.brain.ask(REFLEX_SYSTEM, user, schema))
+        return Decision(d["action"] if d["action"] in options else NONE,
+                        min(1.0, max(0.0, float(d["intensity"]))), float(d["addressed"]), by=self.by)
+
+
+# ---------------------------------------------------------------- settings
+
+
+JEV_CLOUD = "https://api.typesafe.ai/v1/systemone"
+CLAUDE_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+DEFAULTS = {
+    "reflex": "rules",  # rules | jev | llm
+    "reflex_brain": "claude",  # claude | local (for reflex=llm)
+    "designer": "claude",  # claude | local | none
+    "claude_model": "claude-opus-5-5",
+    "claude_reflex_model": "claude-haiku-5-5",
+    "jev_url": JEV_CLOUD,
+    "jev_model": "jev-latest",
+    "local_url": "http://localhost:8080/v1",  # llama-server; Ollama: http://localhost:11434/v1
+    "local_model": "",
+    "host": "",  # robot address; empty = dry run
+    "live": False,
+}
+SECRETS = ("anthropic_key", "typesafe_key")
+CHOICES = {"reflex": ("rules", "jev", "llm"), "reflex_brain": ("claude", "local"),
+           "designer": ("claude", "local", "none"), "claude_model": CLAUDE_MODELS,
+           "claude_reflex_model": CLAUDE_MODELS}
+
+
+class Settings:
+    """config.json in the state folder (mode 600). Keys are write-only: never sent back."""
+
+    def __init__(self, folder=None):
+        self.path = folder / "config.json" if folder else None
+        self.values = dict(DEFAULTS)
+        if self.path and self.path.exists():
+            self.values.update(json.loads(self.path.read_text()))
+
+    def update(self, changes):
+        for k, v in changes.items():
+            if k in SECRETS:
+                if v is None:
+                    self.values.pop(k, None)  # null clears
+                elif str(v).strip():
+                    self.values[k] = str(v).strip()  # "" keeps the stored key
+            elif k in DEFAULTS:
+                if k in CHOICES and v not in CHOICES[k]:
+                    raise ValueError(f"{k} must be one of {', '.join(CHOICES[k])}")
+                self.values[k] = bool(v) if k == "live" else str(v).strip()
+        if self.path:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(self.values, indent=1))
+            self.path.chmod(0o600)
+
+    def key(self, name, env):
+        return self.values.get(name) or os.environ.get(env)
+
+    def public(self):
+        out = {k: v for k, v in self.values.items() if k not in SECRETS}
+        out.update({f"{k}_set": bool(self.key(k, e)) for k, e in
+                    (("anthropic_key", "ANTHROPIC_API_KEY"), ("typesafe_key", "TYPESAFE_API_KEY"))})
+        out["choices"] = CHOICES
+        return out
+
+
+def brain_of(settings, which, claude_model):
+    v = settings.values
+    if which == "local":
+        return LocalBrain(v["local_url"], v["local_model"])
+    return ClaudeBrain(settings.key("anthropic_key", "ANTHROPIC_API_KEY"), claude_model)
+
+
+def build(settings, manifest):
+    """(reflex, designer) for the current settings; ValueError explains what is missing."""
+    v = settings.values
+    if v["reflex"] == "jev":
+        reflex = JevReflex(v["jev_url"], settings.key("typesafe_key", "TYPESAFE_API_KEY"), v["jev_model"])
+    elif v["reflex"] == "llm":
+        reflex = LLMReflex(brain_of(settings, v["reflex_brain"], v["claude_reflex_model"]))
+    else:
+        reflex = RuleReflex()
+    designer = None if v["designer"] == "none" else Designer(brain_of(settings, v["designer"], v["claude_model"]),
+                                                             manifest)
+    return reflex, designer
 
 
 # ---------------------------------------------------------------- spine
@@ -410,6 +568,7 @@ class Mind:
     def __init__(self, reflex, library, memory, spine, designer=None, clock=time.time):
         self.reflex, self.library, self.memory, self.spine = reflex, library, memory, spine
         self.designer, self.clock = designer, clock
+        self.settings, self.link, self.error = None, None, ""
 
     def handle(self, moment):
         t0 = time.monotonic()
@@ -441,6 +600,37 @@ class Mind:
             return NONE, f"design failed: {e}"
         self.library.add(name, about, spec)
         return name, f"new motion {name}: {about}"
+
+    def configure(self, settings):
+        """Apply settings now; on error keep what works (rules, no designer) and report it."""
+        self.settings, self.error = settings, ""
+        try:
+            self.reflex, self.designer = build(settings, self.spine.manifest)
+        except ValueError as e:
+            self.reflex, self.designer, self.error = RuleReflex(), None, str(e)
+        v = settings.values
+        host = v["host"] if v["live"] and v["host"] else None
+        if host != getattr(self.spine.robot, "host", None):
+            if self.link:
+                self.link.set()
+                self.link = None
+            self.spine.robot = Robot(host) if host else None
+            if self.spine.robot:
+                self.spine.robot.host = host
+                self.link = start_heartbeat(self.spine.robot)
+                threading.Thread(target=self._wake, args=(self.spine.robot,), daemon=True).start()
+        return self.status()
+
+    def _wake(self, robot):
+        try:
+            run_lines(robot, ["?arm run", "motion stand"])
+        except OSError as e:
+            self.error = f"robot {robot.base} not reachable: {e}"
+
+    def status(self):
+        robot = self.spine.robot
+        return {"reflex": self.reflex.by, "designer": self.designer.by if self.designer else "none",
+                "robot": robot.base if robot else "", "error": self.error}
 
     def ruminate(self):
         if self.designer and self.memory.recent():
@@ -504,6 +694,13 @@ await fetch('say',{method:'POST',body:s});show()};r.onclick=()=>fetch('ruminate'
 setInterval(show,1000);show()</script>"""
 
 
+def config_view(mind):
+    view = mind.settings.public()
+    view["local_models"] = local_models(view["local_url"])
+    view["status"] = mind.status()
+    return view
+
+
 def serve(port, mind, moments):
     class Handler(BaseHTTPRequestHandler):
         def reply(self, code, body, kind="application/json"):
@@ -521,7 +718,16 @@ def serve(port, mind, moments):
                 return self.reply(200, PAGE, "text/html")
             if self.path == "/log":
                 return self.reply(200, json.dumps(mind.memory.recent(40), ensure_ascii=False))
+            if self.path == "/config":
+                return self.reply(200, json.dumps(config_view(mind), ensure_ascii=False))
             self.reply(404, "{}")
+
+        def do_OPTIONS(self):
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            self.end_headers()
 
         def do_POST(self):
             body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
@@ -529,6 +735,13 @@ def serve(port, mind, moments):
                 offer(moments, Moment("chat", body.strip()))
             elif self.path == "/ruminate":
                 threading.Thread(target=mind.ruminate, daemon=True).start()
+            elif self.path == "/config":
+                try:
+                    mind.settings.update(json.loads(body or "{}"))
+                except ValueError as e:  # bad JSON or choice: nothing applied
+                    return self.reply(400, json.dumps({**config_view(mind), "error": str(e)}, ensure_ascii=False))
+                mind.configure(mind.settings)
+                return self.reply(200, json.dumps(config_view(mind), ensure_ascii=False))
             self.reply(202, "{}")
 
         def log_message(self, *a):
@@ -567,16 +780,15 @@ def main(argv=None):
     p.add_argument("--whisper-model", help="ggml model for whisper.cpp, e.g. ggml-small.bin")
     p.add_argument("--language", default="ja")
     p.add_argument("--silence-rms", type=float, default=300.0, help="speech threshold (int16 RMS)")
-    p.add_argument("--reflex", choices=["rules", "jev"], default="rules")
-    p.add_argument("--jev-url", default="https://api.typesafe.ai/v1/systemone",
-                   help="System One endpoint; a local-jev server for the edge")
-    p.add_argument("--jev-model", default="jev-latest")
-    p.add_argument("--no-designer", action="store_true", help="never call Claude (no new motions, no rumination)")
-    p.add_argument("--model", default="claude-opus-5-5")
-    p.add_argument("--effort", default="low", choices=["low", "medium", "high", "xhigh", "max"])
+    p.add_argument("--reflex", choices=CHOICES["reflex"], help="saved setting otherwise (default rules)")
+    p.add_argument("--designer", choices=CHOICES["designer"], help="saved setting otherwise (default claude)")
+    p.add_argument("--jev-url", help=f"System One endpoint, default {JEV_CLOUD}; a local-jev server for the edge")
+    p.add_argument("--local-url", help="OpenAI-compatible local LLM server, default http://localhost:8080/v1")
+    p.add_argument("--local-model")
     p.add_argument("--ruminate-s", type=float, default=300.0, help="ruminate after this long without input")
-    p.add_argument("--state", type=Path, default=ROOT / ".sesame-mind", help="library.json, memory.jsonl, notes.md")
-    p.add_argument("--host", help="robot address; omit for a dry run")
+    p.add_argument("--state", type=Path, default=ROOT / ".sesame-mind",
+                   help="library.json, memory.jsonl, notes.md, config.json")
+    p.add_argument("--host", help="drive this robot now (saved setting otherwise; settings page can switch)")
     args = p.parse_args(argv)
     audio = args.sdr is not None or args.mic or args.file
     if not (audio or args.text or args.serve):
@@ -584,18 +796,17 @@ def main(argv=None):
     if audio and not args.whisper_model:
         p.error("audio ears need --whisper-model")
 
+    settings = Settings(args.state)
+    flags = {"reflex": args.reflex, "designer": args.designer, "jev_url": args.jev_url,
+             "local_url": args.local_url, "local_model": args.local_model, "host": args.host}
+    settings.update({k: v for k, v in flags.items() if v is not None} | ({"live": True} if args.host else {}))
     manifest = load_manifest()
-    robot = Robot(args.host) if args.host else None
-    reflex = (JevReflex(args.jev_url, os.environ.get("TYPESAFE_API_KEY"), args.jev_model)
-              if args.reflex == "jev" else RuleReflex())
-    designer = None if args.no_designer else ClaudeDesigner(manifest, args.model, args.effort)
-    memory = Memory(args.state)
-    mind = Mind(reflex, Library(args.state / "library.json"), memory, Spine(manifest, robot), designer)
+    mind = Mind(RuleReflex(), Library(args.state / "library.json"), Memory(args.state), Spine(manifest))
+    status = mind.configure(settings)
+    print(f"mind: reflex {status['reflex']}, designer {status['designer']}, robot {status['robot'] or 'dry run'}"
+          + (f"\n  ({status['error']})" if status["error"] else ""), flush=True)
     moments = queue.Queue(maxsize=4)
-    done = start_heartbeat(robot) if robot else None
     try:
-        if robot and run_lines(robot, ["?arm run", "motion stand"]):
-            return 1
         if args.serve:
             serve(args.serve, mind, moments)
         if audio:
@@ -608,15 +819,15 @@ def main(argv=None):
                 if not (audio or args.serve):
                     offer(moments, None)
             threading.Thread(target=typed, daemon=True).start()
-        think(mind, moments, None if args.no_designer else args.ruminate_s)
+        think(mind, moments, args.ruminate_s)
     except KeyboardInterrupt:
-        if robot:
+        if mind.spine.robot:
             print("> off (interrupted)", flush=True)
-            robot.command("off")
+            mind.spine.robot.command("off")
         return 130
     finally:
-        if done:
-            done.set()
+        if mind.link:
+            mind.link.set()
     return 0
 
 
