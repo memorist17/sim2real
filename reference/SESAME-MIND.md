@@ -1,0 +1,112 @@
+# Sesame mind — handoff (2026-11-13)
+
+Chat, voice and radio drive the Sesame S3. A fast reflex picks a motion, an LLM
+designs new motions as small specs, a spine streams them as `pose` frames, and
+the robot remembers and ruminates. This is a working skeleton: the plumbing runs
+and is tested; the intelligence has not yet been tried with real keys or servos.
+
+```text
+robot page (ESP32, http://sesame-s3-8b2c.local) ── Mind panel ──▶ PC: tools/sesame_mind.py --serve 8765
+mic / radio / file / stdin ───────────────────────────────────────▶   ears → reflex → library → spine ──▶ robot /cmd
+                                                                       "new" → designer → library
+                                                                       memory.jsonl, idle → notes.md
+```
+
+## Where things are
+
+| What | Branch (remote `fork`) | Path |
+|---|---|---|
+| PC mind, tests, this note | `feat/sesame-mind` (on `feat/radio-paranoia-agent`) | `tools/sesame_mind.py`, `tests/test_sesame_mind.py` |
+| Robot firmware with Mind panel | `feat/s3-mind-chat` (on `feat/s3-power-stagger-oe18`) | `firmware/sesame-s3/web_ui.h`; local worktree `../sim2real-s3-mind-chat` |
+
+`feat/s3-mind-chat` is a **robot-only build line** (OE=GPIO18, manifest id
+`f7382b66d6f7a844`, which matches the saved calibration). Do not flash a
+main-based build on this robot. To upstream the panel, port the `web_ui.h`
+change onto a main-based branch.
+
+## Current device state
+
+- Flashed `feat/s3-mind-chat` @7f2841c on 2026-11-13 over USB. Boot after flash:
+  `saved=1`, all joints verified, STA reconnected. The battery was not
+  disconnected for this flash; outputs were OFF.
+- The robot joins the phone hotspot `kotaronowifi` (`wifi join`, stored in NVS);
+  the robot AP `Sesame-S3-8B2C` stays as fallback.
+- The hotspot subnet changes between sessions (10.217.105.x, then 10.147.42.x);
+  host parts stayed robot `.6`, Mac `.140`. mDNS `sesame-s3-8b2c.local`
+  resolved from the Mac on 11-12 and failed once on 11-11. If an address times
+  out, read the IP on the OLED (outputs OFF) or `wifi` over USB.
+- USB-C powers logic only; servos need the battery (LM2596 → 5 V).
+
+## Running
+
+```sh
+uv run --group radio python tools/sesame_mind.py --serve 8765          # configure from the robot page
+uv run --group radio python tools/sesame_mind.py --text                # stdin chat, dry run
+uv run --group radio python tools/sesame_mind.py --mic --whisper-model ggml-small.bin --serve 8765
+```
+
+On the robot page, enter `http://<PC LAN IP>:8765` in Mind (stored in the
+phone's localStorage). Settings: reflex (keywords / Jev / LLM), LLM for the
+reflex (Claude / local), designer (Claude / local / none), Claude models, Claude
+and TypeSafe keys, Jev URL, local server URL and model, and "drive this robot"
+(sends the robot's LAN IP to the PC, which then heartbeats, arms `run` and
+stands). Settings persist in `.sesame-mind/config.json` (mode 600, gitignored);
+keys are write-only. A missing key falls back to keywords with no designer and
+shows the reason. A background server started by an agent stops after 2 h; run
+it in a terminal for longer sessions.
+
+Local LLMs: any OpenAI-compatible server. `llama-server` (llama.cpp 0.9.0) is
+installed but there are no models on disk yet, e.g.
+`llama-server -hf ggml-org/gemma-3-4b-it-GGUF` (port 8080, default local URL;
+first run downloads a few GB). Ollama: `http://localhost:11434/v1`.
+
+## Design choices
+
+- The LLM never emits per-tick angles. Specs are `osc` (per-joint sine around a
+  manifest pose) or `keys` (keyframes), in internal degrees relative to `base`,
+  clamped to manifest soft limits; firmware motions are library entries. A learned
+  motion replays with no model call.
+- Jev (TypeSafe System One) fits the reflex: Choice over library names plus
+  `new`/`none`, Score for intensity, Noul for "addressed to the robot".
+  It cannot design motions. No official on-device Jev exists; `local-jev`
+  (third-party, wire-compatible) is the edge candidate, untested.
+- Ears: a rising edge above `loud_rms` is an immediate `sound` moment (no
+  model); speech is split on 600 ms silence for whisper instead of fixed 12 s chunks.
+- One worker handles moments in order; a newer motion interrupts the playing one.
+- The PC server answers the robot page cross-origin (`Access-Control-Allow-Origin: *`).
+  No authentication: anyone on the LAN can chat, change settings or drive the
+  robot, and keys typed on the phone travel over plain HTTP. Use a trusted network.
+
+## Verified
+
+- `tests/test_sesame_mind.py`: 18 tests (spec maths and clamping, library and
+  memory persistence, rules/Jev/LLM reflex parsing, settings and key hiding,
+  `/config` and CORS, ears segmentation, failure fallbacks). The full suite's
+  failure set is unchanged (LFS-only MJCF assets missing locally).
+- Firmware builds (83 % flash), `tests/test_s3_firmware.py` passes, page JS
+  passes `node --check`, the flashed robot serves the new panel.
+- Dry runs of the chat page and `/config` from the Mac.
+
+## Not yet verified
+
+1. Claude designing a motion (no `ANTHROPIC_API_KEY` in the agent shell).
+2. Jev request/response field names: built from docs.typesafe.ai and guides as of
+   2026-11; the parser tolerates renamed fields. Check with a real key.
+3. Streaming `pose` frames on the real robot (needs the battery) and how 20 Hz
+   frames interact with the firmware rate limit and Wi-Fi jitter (RSSI was -80 dBm).
+4. The Mind panel in a real phone browser (no browser in the agent environment).
+5. Any local model's quality as reflex or designer.
+
+## Next steps
+
+1. Enter a Claude key on the page, ask for a new motion in a dry run, inspect
+   `.sesame-mind/library.json`, then switch "drive this robot" on with the battery.
+2. Jev key: compare latency and choices against `llm:claude` on the same inputs
+   (`memory.jsonl` logs `reflex_ms` and `by`).
+3. Firmware spine: an `osc`/keyframe command expanded on the ESP32 at ≥ 50 Hz, so
+   one line per motion crosses Wi-Fi.
+4. Autonomy on link loss: store a few library specs and an idle routine
+   (written by rumination) in NVS and play them instead of the current
+   freeze-and-hold; include the tuck → stand recovery (no fall sensing).
+5. Optional robot-mounted I2S mic (e.g. INMP441) for onset/loudness reflexes
+   that work offline.
