@@ -29,7 +29,9 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <section><h2>Mind (chat via PC, tools/sesame_mind.py --serve)</h2>
 <input id="mind" placeholder="http://PC-IP:8765" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">
 <form class="row" onsubmit="event.preventDefault();chat()"><input id="msg" placeholder="話しかける / ○○みたいな動きを作って">
-<button style="flex:0 0 5em">Say</button></form><pre id="mlog"></pre>
+<button style="flex:0 0 5em">Say</button></form>
+<div class="row"><select id="body" data-k="body" onchange="mbody()"><option value="off">声で動く: オフ<option value="both">声で動く: 抑揚＋言葉
+<option value="prosody">声で動く: 抑揚だけ<option value="words">声で動く: 言葉だけ</select></div><pre id="mbst"></pre><pre id="mlog"></pre>
 <details id="mset"><summary>Settings (saved on the PC)</summary><div class="cf">
 <label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
 <label>反射のLLM<select data-k="reflex_brain"><option value="claude">Claude<option value="local">ローカル</select></label>
@@ -98,6 +100,17 @@ for(const k of['anthropic_key','typesafe_key'])$('#'+k+'_set').textContent=c[k+'
 const st=c.status||{};$('#mst').textContent=`now: reflex ${st.reflex} | designer ${st.designer} | robot ${st.robot||'dry run'}`+
 (st.error||c.error?'\nERR '+(c.error||st.error):'')}
 $('#mset').ontoggle=e=>{if(e.target.open)mcfg()};
+// Voice body: the PC's microphone moves this robot (pitch/loudness -> body, words -> intent).
+async function mbody(){const m=mindURL();if(!m)return $('#mbst').textContent='enter the mind URL first';const v=$('#body').value,o={body:v};
+if(v!=='off')Object.assign(o,{live:true,host:last.sta&&last.sta!=='0.0.0.0'?last.sta:location.hostname});
+try{await fetch(m+'/config',{method:'POST',body:JSON.stringify(o),signal:AbortSignal.timeout(8000)})}
+catch(e){$('#mbst').textContent='ERR mind not reachable ('+e.name+')'}}
+setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
+try{const b=await (await fetch(m+'/body',{signal:AbortSignal.timeout(1500)})).json();
+if(document.activeElement!==$('#body'))$('#body').value=b.mode;
+$('#mbst').textContent=b.mode==='off'?'':`声 ${b.f0??'-'} Hz (基準 ${b.f0_ref}) 音量 ${b.loud} | 覚醒 ${b.arousal} 振幅 ${b.amp} ${b.gait} ${b.hz} Hz\n`+
+`意図 ${b.intent} 「${b.heard}」 | `+(b.mic?'PCマイク受信中':'PCマイクなし（--mic で起動。言葉は上の欄でも可）')+
+` | ${b.robot?'pose送信 '+b.sent:'試し（ロボットに送らない）'}`+(b.error?'\nERR '+b.error:'')}catch(e){}},500);
 setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
 try{const l=await (await fetch(m+'/log',{signal:AbortSignal.timeout(2000)})).json();
 $('#mlog').textContent=l.reverse().map(e=>`${e.source}「${e.text}」→ ${e.did} (${e.by} ${e.reflex_ms}ms) ${e.note}`).join('\n')}catch(e){}},1500);
