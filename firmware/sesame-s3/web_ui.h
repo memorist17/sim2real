@@ -36,6 +36,7 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <label style="flex:0 0 auto;display:flex;align-items:center;gap:4px"><input type="checkbox" id="simon" onchange="mbody()">仮想ロボット</label>
 <button style="flex:0 0 5em" onclick="mruminate()">反芻</button></div>
 <img id="simv" alt="virtual robot" style="width:100%;display:none;margin-bottom:6px"><pre id="mbst"></pre><pre id="mlog"></pre>
+<details id="mcon"><summary>ログ（PC）</summary><pre id="mconl" style="color:#666"></pre></details>
 <details id="mset"><summary>Settings (saved on the PC)</summary><div class="cf">
 <label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
 <label>反射のLLM<select data-k="reflex_brain"><option value="claude">Claude<option value="local">ローカル</select></label>
@@ -124,7 +125,10 @@ $('#mbst').textContent=b.mode==='off'?'':`声 ${b.f0??'-'} Hz (基準 ${b.f0_ref
 ` | ${b.robot?'pose送信 '+b.sent:'試し（ロボットに送らない）'}`+(b.error?'\nERR '+b.error:'')}catch(e){}},500);
 setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
 try{const l=await (await fetch(m+'/log',{signal:AbortSignal.timeout(2000)})).json();
-$('#mlog').textContent=l.reverse().map(e=>`${e.source}「${e.text}」→ ${e.did} (${e.by} ${e.reflex_ms}ms) ${e.note}`).join('\n')}catch(e){}},1500);
+$('#mlog').textContent=l.reverse().map(e=>`${e.source}「${e.text}」→ ${e.did} (${e.by} ${e.reflex_ms}ms) ${e.note}`).join('\n')}catch(e){}
+if(!$('#mcon').open)return;
+try{const c=await (await fetch(m+'/console',{signal:AbortSignal.timeout(2000)})).json();
+$('#mconl').textContent=c.reverse().map(([t,s])=>new Date(t*1000).toLocaleTimeString()+' '+s).join('\n')}catch(e){}},1500);
 function say(t){if(t)log.textContent=(t+'\n'+log.textContent).slice(0,6000)}
 // One request at a time: the firmware serves a single client.
 // Last 30 request round trips (ms; -1 = failed) for the link line.
