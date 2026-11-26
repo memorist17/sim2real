@@ -36,6 +36,8 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <label style="flex:0 0 auto;display:flex;align-items:center;gap:4px"><input type="checkbox" id="simon" onchange="mbody()">仮想ロボット</label>
 <button style="flex:0 0 5em" onclick="mruminate()">反芻</button></div>
 <img id="simv" alt="virtual robot" style="width:100%;display:none;margin-bottom:6px"><pre id="mbst"></pre><pre id="mlog"></pre>
+<details id="mthink"><summary>思考ログ <a id="mthinka" target="_blank" style="font-size:12px">別タブ</a></summary>
+<iframe id="mthinkf" title="思考ログ" style="width:100%;height:75vh;border:0;border-radius:8px"></iframe></details>
 <details id="mcon"><summary>ログ（PC）</summary><pre id="mconl" style="color:#666"></pre></details>
 <details id="mset"><summary>Settings (saved on the PC)</summary><div class="cf">
 <label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
@@ -105,6 +107,9 @@ $('#typesafe_key_set').textContent=c.typesafe_key_set?'✓ set':'not set';
 const st=c.status||{};$('#mst').textContent=`now: reflex ${st.reflex} | designer ${st.designer} | robot ${st.robot||'dry run'}`+
 (st.error||c.error?'\nERR '+(c.error||st.error):'')}
 $('#mset').ontoggle=e=>{if(e.target.open)mcfg()};
+// The thought log lives on the PC mind (cards, charts); the robot page just embeds it.
+$('#mthink').ontoggle=e=>{const m=mindURL(),f=$('#mthinkf');if(!e.target.open||!m)return;
+$('#mthinka').href=m+'/thoughts';if(f.src!==m+'/thoughts')f.src=m+'/thoughts'};
 // Voice body: the PC's microphone moves this robot (pitch/loudness -> body, words -> intent).
 let bodyRobot='';
 async function mruminate(){const m=mindURL();if(m)fetch(m+'/ruminate',{method:'POST',signal:AbortSignal.timeout(3000)}).catch(()=>{})}
