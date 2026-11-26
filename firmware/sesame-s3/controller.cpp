@@ -38,7 +38,12 @@ bool benchDisplay = true;
 uint32_t lastPWM = 0, buttonStart = 0;
 enum Owner { NONE, USB, WEB, BUTTON } owner = NONE;
 String ssid, hostname, country = "JP";
-String staSsid, staPass; // optional home/lab network, NVS namespace sesame-net
+String staSsid, staPass; // the network being joined now, one of the known ones below
+// Known networks, newest first (NVS namespace sesame-net: n, s0..s4, p0..p4). When the
+// current one is gone the robot scans and joins the strongest known network in range.
+const int MAX_NETS = 5;
+String netSsid[MAX_NETS], netPass[MAX_NETS];
+int netCount = 0;
 String mindUrl; // PC running tools/sesame_mind.py, announced by it (NVS sesame-net "mind")
 int wifiChannel = 1;
 float wifiPower = 8.5;
@@ -270,8 +275,11 @@ String wifiStatus() {
   wifi_sta_list_t peers = {}; String rssi;
   if (esp_wifi_ap_get_sta_list(&peers) == ESP_OK)
     for (int i = 0; i < peers.num; ++i) rssi += (i ? "," : "") + String(peers.sta[i].rssi);
+  String known;
+  for (int i = 0; i < netCount; ++i) known += (i ? "|" : "") + netSsid[i];
   String sta = staSsid.length() ? " STA ssid=" + staSsid + " connected=" + String(WiFi.isConnected()) +
-    " ip=" + WiFi.localIP().toString() + " rssi=" + String(WiFi.RSSI()) + " mdns=" + hostname + ".local" : " STA none";
+    " ip=" + WiFi.localIP().toString() + " rssi=" + String(WiFi.RSSI()) + " mdns=" + hostname + ".local" +
+    " known=" + known : " STA none";
   return "AP ok=" + String(apOK) + " ssid=" + ssid + " ip=" + WiFi.softAPIP().toString() +
     " channel=" + String(config.ap.channel) + " hidden=" + String(config.ap.ssid_hidden) +
     " country=" + String(countryText) + " tx_dbm=" + String(tx / 4.0, 2) +
@@ -304,14 +312,70 @@ void startWifi() {
   if (started) { dns.start(53, "*", WiFi.softAPIP()); http.begin(); }
   if (MDNS.begin(hostname.c_str())) MDNS.addService("http", "tcp", 80);
 }
+bool saveNets() {
+  bool ok = netPrefs.putUChar("n", netCount);
+  for (int i = 0; i < MAX_NETS; ++i) {
+    String s = "s" + String(i), p = "p" + String(i);
+    if (i < netCount) {
+      ok &= netPrefs.putString(s.c_str(), netSsid[i]) > 0;
+      if (netPass[i].length()) ok &= netPrefs.putString(p.c_str(), netPass[i]) > 0; else netPrefs.remove(p.c_str());
+    } else { netPrefs.remove(s.c_str()); netPrefs.remove(p.c_str()); }
+  }
+  netPrefs.remove("ssid"); netPrefs.remove("pass"); // the single-network keys before the list
+  return ok;
+}
+void loadNets() {
+  netCount = 0;
+  if (netPrefs.isKey("n")) {
+    for (int i = 0; i < min(int(netPrefs.getUChar("n")), MAX_NETS); ++i) {
+      String s = "s" + String(i), p = "p" + String(i);
+      if (!netPrefs.isKey(s.c_str())) continue;
+      netSsid[netCount] = netPrefs.getString(s.c_str());
+      netPass[netCount++] = netPrefs.isKey(p.c_str()) ? netPrefs.getString(p.c_str()) : "";
+    }
+  } else if (netPrefs.isKey("ssid")) { // saved by older firmware
+    netSsid[0] = netPrefs.getString("ssid");
+    netPass[0] = netPrefs.isKey("pass") ? netPrefs.getString("pass") : "";
+    netCount = 1;
+  }
+  staSsid = netCount ? netSsid[0] : ""; staPass = netCount ? netPass[0] : "";
+}
+int knownNet(const String& name) {
+  for (int i = 0; i < netCount; ++i) if (netSsid[i] == name) return i;
+  return -1;
+}
 void stationService() {
-  static bool was = false; static uint32_t checked = 0;
-  if (!staSsid.length() || millis() - checked < 1000) return;
+  static bool was = false, scanning = false; static uint32_t checked = 0, lostAt = 0;
+  if (!netCount || millis() - checked < 1000) return;
   checked = millis();
-  if (WiFi.isConnected() == was) return;
-  was = !was;
-  if (was) Serial.printf("STA connected ip=%s http://%s.local\n", WiFi.localIP().toString().c_str(), hostname.c_str());
-  else Serial.println("STA disconnected; retrying (AP still up)");
+  bool now = WiFi.isConnected();
+  if (now != was) {
+    was = now;
+    if (now) Serial.printf("STA connected ssid=%s ip=%s http://%s.local\n", staSsid.c_str(),
+                           WiFi.localIP().toString().c_str(), hostname.c_str());
+    else Serial.println("STA disconnected; retrying (AP still up)");
+  }
+  if (now) { lostAt = 0; return; }
+  if (!lostAt) lostAt = millis();
+  if (netCount < 2) return; // one network: the core's auto-reconnect keeps trying it
+  if (!scanning) {
+    if (millis() - lostAt < 8000) return; // give the current network a chance first
+    if (WiFi.scanNetworks(true) == WIFI_SCAN_FAILED) { WiFi.disconnect(); return; } // retry next second
+    scanning = true; return;
+  }
+  int found = WiFi.scanComplete();
+  if (found == WIFI_SCAN_RUNNING) return;
+  scanning = false; lostAt = millis(); // wait again before the next scan
+  int best = -1; int32_t bestRssi = -1000;
+  for (int i = 0; i < found; ++i) {
+    int k = knownNet(WiFi.SSID(i));
+    if (k >= 0 && WiFi.RSSI(i) > bestRssi) { best = k; bestRssi = WiFi.RSSI(i); }
+  }
+  WiFi.scanDelete();
+  if (best < 0) { Serial.println("STA no known network in range; scanning again"); return; }
+  staSsid = netSsid[best]; staPass = netPass[best];
+  Serial.printf("STA trying %s (rssi %d)\n", staSsid.c_str(), int(bestRssi));
+  WiFi.begin(staSsid.c_str(), staPass.length() ? staPass.c_str() : nullptr);
 }
 
 const char* HELP =
@@ -326,7 +390,8 @@ const char* HELP =
   "OFF only: wifi JP|US|GB|DE|FR CHANNEL(1..11) TX_DBM(2|8.5|13|19.5)\n"
   "power | power stagger MS (0..500; one servo starts per MS, 0 = all at once)\n"
   "power low VOLTS | power battery GPIO RATIO | power battery cal VOLTS | power battery off\n"
-  "USB+OFF only: wifi join SSID [PASSWORD] (no spaces) | wifi forget\n"
+  "USB+OFF only: wifi join SSID [PASSWORD] (quote names with spaces: \"My Net\"; up to 5 kept) |\n"
+  "  wifi forget [SSID] (all, or one)\n"
   "mind | mind http://PC:PORT | mind forget (the page's sesame_mind URL; saved)\n"
   "Web: /cmd?c=A;B;C runs in order, stops at first ERR.\n"
   "No owner message for 500ms: freeze+hold torque (status hold=1); any owner\n"
@@ -483,15 +548,31 @@ String command(const char* text, Owner source) {
     if (source != USB) return "ERR change Wi-Fi via USB with servo power off";
     if (strlen(c.words[2]) > 32 || (c.count == 4 && (strlen(c.words[3]) < 8 || strlen(c.words[3]) > 63)))
       return "ERR SSID <=32, password 8..63 chars";
-    staSsid = c.words[2]; staPass = c.count == 4 ? c.words[3] : "";
-    if (!netPrefs.putString("ssid", staSsid) || (staPass.length() && !netPrefs.putString("pass", staPass)))
-      return "ERR NVS save";
-    if (!staPass.length()) netPrefs.remove("pass");
+    if (!strlen(c.words[2])) return "ERR SSID <=32, password 8..63 chars";
+    String name = c.words[2], pass = c.count == 4 ? c.words[3] : "";
+    int at = knownNet(name);
+    if (at < 0) at = min(netCount, MAX_NETS - 1); // new: the oldest drops out when full
+    else --netCount;
+    for (int i = at; i > 0; --i) { netSsid[i] = netSsid[i - 1]; netPass[i] = netPass[i - 1]; }
+    netSsid[0] = name; netPass[0] = pass; netCount = min(netCount + 1, MAX_NETS);
+    if (!saveNets()) return "ERR NVS save";
+    staSsid = name; staPass = pass;
     startWifi(); return "OK STA joining (saved); watch for 'STA connected' or run wifi\n" + wifiStatus();
-  } else if (c.is("wifi", 2) && !strcmp(c.words[1], "forget")) {
+  } else if ((c.is("wifi", 2) || c.is("wifi", 3)) && !strcmp(c.words[1], "forget")) {
     if (source != USB) return "ERR change Wi-Fi via USB with servo power off";
-    netPrefs.clear(); staSsid = staPass = "";
-    WiFi.disconnect(true); startWifi(); return "OK STA forgotten; AP only\n" + wifiStatus();
+    if (c.count == 3) {
+      int at = knownNet(c.words[2]);
+      if (at < 0) return "ERR not a known network; run wifi";
+      for (int i = at; i + 1 < netCount; ++i) { netSsid[i] = netSsid[i + 1]; netPass[i] = netPass[i + 1]; }
+      --netCount;
+    } else netCount = 0;
+    if (!saveNets()) return "ERR NVS save";
+    bool current = c.count == 2 || knownNet(staSsid) < 0; // was the one being joined forgotten?
+    if (current) {
+      staSsid = netCount ? netSsid[0] : ""; staPass = netCount ? netPass[0] : "";
+      WiFi.disconnect(true); startWifi();
+    }
+    return String(netCount ? "OK forgotten" : "OK all networks forgotten; AP only") + "\n" + wifiStatus();
   } else if (c.is("wifi", 4) && c.integer(2, number) && c.number(3, value) && number >= 1 && number <= 11 &&
              (value == 2 || value == 8.5 || value == 13 || value == 19.5) &&
              (!strcmp(c.words[1], "JP") || !strcmp(c.words[1], "US") || !strcmp(c.words[1], "GB") ||
@@ -750,8 +831,7 @@ void setup() {
   char name[32]; snprintf(name, sizeof(name), "Sesame-S3-%02X%02X", unsigned((mac >> 32)&255), unsigned((mac >> 40)&255)); ssid = name;
   hostname = ssid; hostname.toLowerCase();
   if (netPrefs.begin("sesame-net", false)) {
-    if (netPrefs.isKey("ssid")) staSsid = netPrefs.getString("ssid");
-    if (netPrefs.isKey("pass")) staPass = netPrefs.getString("pass");
+    loadNets();
     if (netPrefs.isKey("mind")) mindUrl = netPrefs.getString("mind");
   }
   startWifi();

@@ -15,10 +15,20 @@ struct CommandLine {
     count = 0;
     if (strlen(input) >= sizeof(text)) return false;
     strcpy(text, input);
-    char* save = nullptr;
-    for (char* p = strtok_r(text, " \t\r\n", &save); p; p = strtok_r(nullptr, " \t\r\n", &save)) {
+    auto blank = [](char ch) { return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n'; };
+    for (char* p = text;;) {
+      while (blank(*p)) ++p;
+      if (!*p) break;
       if (count == 12) return false;
-      words[count++] = p;
+      if (*p == '"') { // "a quoted word" may hold spaces (Wi-Fi names); no escapes
+        char* end = strchr(++p, '"');
+        if (!end || (end[1] && !blank(end[1]))) return false;
+        *end = 0; words[count++] = p; p = end + 1;
+      } else {
+        words[count++] = p;
+        while (*p && !blank(*p)) ++p;
+        if (*p) *p++ = 0;
+      }
     }
     return count != 0;
   }

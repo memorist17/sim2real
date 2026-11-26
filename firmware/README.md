@@ -138,12 +138,18 @@ robot. `status` reports `up_s` and `reset` (e.g. `brownout`), and the page logs
 `ROBOT RESTARTED` when uptime goes backwards. Over USB with outputs off:
 
 ```text
-wifi join SSID PASSWORD     # no spaces; saved in NVS namespace sesame-net
+wifi join SSID PASSWORD     # saved in NVS namespace sesame-net; up to 5 networks kept
+wifi join "FabCafe FreeWi-Fi"   # quote names with spaces; no password = open network
 wifi                        # STA connected=1 ip=… mdns=sesame-s3-xxxx.local
-wifi forget                 # back to AP only
+wifi forget "SSID"          # drop one network
+wifi forget                 # drop all; back to AP only
 ```
 
-The AP stays up as a fallback and follows the network's channel. The OLED shows
+The newest network is tried first. When it is gone for 8 s and more than one
+is known, the robot scans in the background and joins the strongest known
+network in range (`wifi` lists them as `known=`). The ESP32-S3 has 2.4 GHz
+radio only: a 5 GHz-only network cannot be joined. Networks with a web login
+page (captive portal) do not work. The AP stays up as a fallback and follows the network's channel. The OLED shows
 the LAN IP while outputs are off. HTTP has **no authentication**: anyone on that
 network can command the robot, so use a trusted home network only.
 

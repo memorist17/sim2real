@@ -104,6 +104,10 @@ int main() {
   }
   assert(c.parse("map R1 1.5")); assert(!c.integer(2,n));
   assert(c.parse("angle 90 trailing") && !c.is("angle",2));
+  assert(c.parse("wifi join \"FabCafe FreeWi-Fi\"") && c.is("wifi",3) && !strcmp(c.words[2],"FabCafe FreeWi-Fi"));
+  assert(c.parse("wifi join \"My Net\" pass1234") && c.is("wifi",4) && !strcmp(c.words[3],"pass1234"));
+  assert(c.parse("  arm\tjoint  R1 ") && c.is("arm",3) && !strcmp(c.words[2],"R1"));
+  assert(!c.parse("wifi join \"unterminated")); assert(!c.parse("wifi join \"a\"b"));
   char longline[170]; memset(longline,'x',169); longline[169]=0; assert(!c.parse(longline));
   assert(!c.parse("1 2 3 4 5 6 7 8 9 10 11 12 13"));
   // Staggered energise: eight newly requested channels start one per interval.
