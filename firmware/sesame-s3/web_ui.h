@@ -25,6 +25,7 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <header><div id="st">connecting…</div><div id="pw"></div>
 <div class="top"><button class="off" onclick="stopAll('off')">OUTPUTS OFF</button>
 <button class="fr" onclick="stopAll('stop')">Freeze</button></div></header>
+<section><a href="/space" style="font-weight:bold">動作空間ビューワー（8軸の地図・実機操作）→</a></section>
 <section><h2>Motions (auto arm run)</h2><div class="g" id="motions"></div></section>
 <section><h2>Mind (chat via PC, tools/sesame_mind.py --serve --robot)</h2>
 <input id="mind" placeholder="http://PC-IP:8765 (filled in when the PC announces itself)" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">

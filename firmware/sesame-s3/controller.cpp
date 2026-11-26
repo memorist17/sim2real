@@ -16,6 +16,7 @@
 #include "power.h"
 #include "vendor/face-bitmaps.h"
 #include "web_ui.h"
+#include "space_ui.h"
 
 using namespace sesame;
 namespace {
@@ -536,6 +537,8 @@ void serialService() {
 // service inside WebServer::handleClient(). No OTA or blocking motion loops.
 String request;
 String response;
+const uint8_t* rawBody = nullptr; // static gzip page streamed after the headers in `response`
+size_t rawLen = 0;
 size_t responseSent = 0;
 uint32_t requestStarted = 0;
 String urlDecode(const String& text) {
@@ -556,21 +559,24 @@ void httpService() {
   if (!client) {
     client = http.accept();
     if (!client) return;
-    client.setTimeout(1); request = ""; response = ""; responseSent = 0; requestStarted = millis();
+    client.setTimeout(1); request = ""; response = ""; rawBody = nullptr; rawLen = 0; responseSent = 0; requestStarted = millis();
   }
   // 600 ms to receive the request (a weak link needs TCP retransmits); up to
   // 1.5 s to drain a page. Nonblocking either way: only other clients wait.
   const uint32_t age = millis() - requestStarted;
-  if ((!response.length() && age > 600) || age > 1500 || request.length() > 1024) {
+  if ((!response.length() && age > 600) || age > (rawLen ? 6000u : 1500u) || request.length() > 1024) {
     if (!response.length()) ++httpDrops;
     client.stop(); return;
   }
   if (response.length()) {
-    size_t remaining = response.length() - responseSent;
-    int sent = ::send(client.fd(), response.c_str() + responseSent, remaining > 512 ? 512 : remaining, MSG_DONTWAIT);
+    const size_t head = response.length(), total = head + rawLen;
+    const char* from = responseSent < head ? response.c_str() + responseSent
+                                           : reinterpret_cast<const char*>(rawBody) + (responseSent - head);
+    size_t remaining = (responseSent < head ? head : total) - responseSent;
+    int sent = ::send(client.fd(), from, remaining > 512 ? 512 : remaining, MSG_DONTWAIT);
     if (sent > 0) responseSent += sent;
     else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) { client.stop(); return; }
-    if (responseSent == response.length()) client.stop();
+    if (responseSent == total) client.stop();
     return;
   }
   for (unsigned budget = 0; budget < 192 && client.available(); ++budget) request += char(client.read());
@@ -591,11 +597,15 @@ void httpService() {
       if (out.length()) body += (body.length() ? "\n" : "") + out;
       if (out.startsWith("ERR")) { code = 400; break; }
     }
+  } else if (path == "/space" || path == "/space/") {
+    // Motion-space viewer (sim2real sim/motion_space_viewer.html), gzip from flash.
+    type = "text/html"; rawBody = SPACE_UI_GZ; rawLen = SPACE_UI_GZ_LEN;
   } else { type = "text/html"; body = WEB_UI; }
   // Stream response with MSG_DONTWAIT on subsequent iterations. Arduino's
   // NetworkClient::write retries with blocking select; do not use it here.
   response = "HTTP/1.1 " + String(code) + (code == 200 ? " OK" : " Bad Request") +
-    "\r\nContent-Type: " + type + "\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: " + String(body.length()) + "\r\n\r\n" + body;
+    "\r\nContent-Type: " + type + (rawLen ? "\r\nContent-Encoding: gzip" : "") +
+    "\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: " + String(body.length() + rawLen) + "\r\n\r\n" + body;
 }
 
 void buttonService() {
