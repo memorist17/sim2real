@@ -40,11 +40,11 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
 <label>反射のLLM<select data-k="reflex_brain"><option value="claude">Claude<option value="local">ローカル</select></label>
 <label>動き作り・反芻<select data-k="designer"><option value="claude">Claude<option value="local">ローカル<option value="none">なし</select></label>
-<label>Claude key <i id="anthropic_key_set"></i></label><input type="password" data-k="anthropic_key" placeholder="空欄 = 変更しない" style="width:100%">
+<label>Claude の認証（PC 側） <i id="claude_auth"></i></label>
 <label>Claude（動き作り）<select data-k="claude_model"><option>claude-opus-5-5<option>claude-sonnet-5-5<option>claude-haiku-5-5</select></label>
 <label>Claude（反射）<select data-k="claude_reflex_model"><option>claude-opus-5-5<option>claude-sonnet-5-5<option>claude-haiku-5-5</select></label>
 <label>Jev URL<input data-k="jev_url" autocapitalize="off" spellcheck="false"></label>
-<label>TypeSafe key <i id="typesafe_key_set"></i></label><input type="password" data-k="typesafe_key" placeholder="空欄 = 変更しない" style="width:100%">
+<label>TypeSafe key（PC の TYPESAFE_API_KEY） <i id="typesafe_key_set"></i></label>
 <label>ローカルURL<input data-k="local_url" autocapitalize="off" spellcheck="false"></label>
 <label>ローカルモデル<select data-k="local_model" id="lmodels"></select></label>
 <label><input type="checkbox" data-k="live">このロボットを動かす（オフ = 試し）</label>
@@ -92,15 +92,15 @@ catch(e){$('#mlog').textContent='ERR mind not reachable ('+e.name+'): is the PC 
 // Settings live on the PC; keys are write-only (only "set" comes back).
 async function mcfg(save){const m=mindURL();if(!m)return $('#mst').textContent='enter the mind URL first';let c;
 try{if(save){const o={host:last.sta&&last.sta!=='0.0.0.0'?last.sta:location.hostname};
-for(const e of document.querySelectorAll('[data-k]')){if(e.type==='password'){if(e.value)o[e.dataset.k]=e.value;e.value=''}
-else o[e.dataset.k]=e.type==='checkbox'?e.checked:e.value}
+for(const e of document.querySelectorAll('[data-k]'))o[e.dataset.k]=e.type==='checkbox'?e.checked:e.value
 c=await (await fetch(m+'/config',{method:'POST',body:JSON.stringify(o),signal:AbortSignal.timeout(8000)})).json()}
 else c=await (await fetch(m+'/config',{signal:AbortSignal.timeout(5000)})).json()}
 catch(e){return $('#mst').textContent='ERR mind not reachable ('+e.name+')'}
 const s=$('#lmodels');s.textContent='';for(const x of new Set([...(c.local_models||[]),c.local_model].filter(Boolean)))s.add(new Option(x));
 if(!s.options.length)s.add(new Option('(no local server)',''));
-for(const e of document.querySelectorAll('[data-k]'))if(e.type==='checkbox')e.checked=!!c[e.dataset.k];else if(e.type!=='password')e.value=c[e.dataset.k]??'';
-for(const k of['anthropic_key','typesafe_key'])$('#'+k+'_set').textContent=c[k+'_set']?'✓ set':'not set';
+for(const e of document.querySelectorAll('[data-k]'))if(e.type==='checkbox')e.checked=!!c[e.dataset.k];else e.value=c[e.dataset.k]??'';
+$('#claude_auth').textContent={key:'✓ 環境変数のキー',profile:'✓ ant auth login'}[c.claude_auth]||'なし: PC で ant auth login';
+$('#typesafe_key_set').textContent=c.typesafe_key_set?'✓ set':'not set';
 const st=c.status||{};$('#mst').textContent=`now: reflex ${st.reflex} | designer ${st.designer} | robot ${st.robot||'dry run'}`+
 (st.error||c.error?'\nERR '+(c.error||st.error):'')}
 $('#mset').ontoggle=e=>{if(e.target.open)mcfg()};
