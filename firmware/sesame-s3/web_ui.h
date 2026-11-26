@@ -26,12 +26,15 @@ pre{font:12px ui-monospace,monospace;white-space:pre-wrap;margin:0;max-height:40
 <div class="top"><button class="off" onclick="stopAll('off')">OUTPUTS OFF</button>
 <button class="fr" onclick="stopAll('stop')">Freeze</button></div></header>
 <section><h2>Motions (auto arm run)</h2><div class="g" id="motions"></div></section>
-<section><h2>Mind (chat via PC, tools/sesame_mind.py --serve)</h2>
-<input id="mind" placeholder="http://PC-IP:8765" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">
+<section><h2>Mind (chat via PC, tools/sesame_mind.py --serve --robot)</h2>
+<input id="mind" placeholder="http://PC-IP:8765 (filled in when the PC announces itself)" autocapitalize="off" autocorrect="off" spellcheck="false" style="width:100%;margin-bottom:6px">
 <form class="row" onsubmit="event.preventDefault();chat()"><input id="msg" placeholder="話しかける / ○○みたいな動きを作って">
 <button style="flex:0 0 5em">Say</button></form>
 <div class="row"><select id="body" data-k="body" onchange="mbody()"><option value="off">声で動く: オフ<option value="both">声で動く: 抑揚＋言葉
-<option value="prosody">声で動く: 抑揚だけ<option value="words">声で動く: 言葉だけ</select></div><pre id="mbst"></pre><pre id="mlog"></pre>
+<option value="prosody">声で動く: 抑揚だけ<option value="words">声で動く: 言葉だけ</select>
+<label style="flex:0 0 auto;display:flex;align-items:center;gap:4px"><input type="checkbox" id="simon" onchange="mbody()">仮想ロボット</label>
+<button style="flex:0 0 5em" onclick="mruminate()">反芻</button></div>
+<img id="simv" alt="virtual robot" style="width:100%;display:none;margin-bottom:6px"><pre id="mbst"></pre><pre id="mlog"></pre>
 <details id="mset"><summary>Settings (saved on the PC)</summary><div class="cf">
 <label>反射<select data-k="reflex"><option value="rules">キーワード（オフライン）<option value="jev">Jev<option value="llm">LLM</select></label>
 <label>反射のLLM<select data-k="reflex_brain"><option value="claude">Claude<option value="local">ローカル</select></label>
@@ -101,13 +104,20 @@ const st=c.status||{};$('#mst').textContent=`now: reflex ${st.reflex} | designer
 (st.error||c.error?'\nERR '+(c.error||st.error):'')}
 $('#mset').ontoggle=e=>{if(e.target.open)mcfg()};
 // Voice body: the PC's microphone moves this robot (pitch/loudness -> body, words -> intent).
+let bodyRobot='';
+async function mruminate(){const m=mindURL();if(m)fetch(m+'/ruminate',{method:'POST',signal:AbortSignal.timeout(3000)}).catch(()=>{})}
 async function mbody(){const m=mindURL();if(!m)return $('#mbst').textContent='enter the mind URL first';const v=$('#body').value,o={body:v};
-if(v!=='off')Object.assign(o,{live:true,host:last.sta&&last.sta!=='0.0.0.0'?last.sta:location.hostname});
+// the virtual robot (PC) or this robot; unticking it with the body off stops driving the virtual one
+if($('#simon').checked)Object.assign(o,{live:true,host:'sim'});
+else if(v!=='off')Object.assign(o,{live:true,host:last.sta&&last.sta!=='0.0.0.0'?last.sta:location.hostname});
+else if(bodyRobot==='sim')o.live=false;
 try{await fetch(m+'/config',{method:'POST',body:JSON.stringify(o),signal:AbortSignal.timeout(8000)})}
 catch(e){$('#mbst').textContent='ERR mind not reachable ('+e.name+')'}}
 setInterval(async()=>{const m=mindURL();if(!m||document.hidden)return;
 try{const b=await (await fetch(m+'/body',{signal:AbortSignal.timeout(1500)})).json();
 if(document.activeElement!==$('#body'))$('#body').value=b.mode;
+const sim=b.robot==='sim',v=$('#simv');bodyRobot=b.robot;if(document.activeElement!==$('#simon'))$('#simon').checked=sim;
+if(sim&&!v.src.startsWith(m)){v.src=m+'/sim.mjpg';v.style.display='block'}else if(!sim&&v.src){v.removeAttribute('src');v.style.display='none'}
 $('#mbst').textContent=b.mode==='off'?'':`声 ${b.f0??'-'} Hz (基準 ${b.f0_ref}) 音量 ${b.loud} | 覚醒 ${b.arousal} 振幅 ${b.amp} ${b.gait} ${b.hz} Hz\n`+
 `意図 ${b.intent} 「${b.heard}」 | `+(b.mic?'PCマイク受信中':'PCマイクなし（--mic で起動。言葉は上の欄でも可）')+
 ` | ${b.robot?'pose送信 '+b.sent:'試し（ロボットに送らない）'}`+(b.error?'\nERR '+b.error:'')}catch(e){}},500);
@@ -127,7 +137,8 @@ const send=c=>req('/cmd?c='+encodeURIComponent(c));
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 async function status(){const[,t]=await req('/status');const g=k=>(t.match(new RegExp(' '+k+'=(\\S+)'))||[])[1];
 last={mode:MODES[+(t.match(/^mode=(\d)/)||[])[1]]||'?',out:g('outputs'),motion:g('motion'),sweep:g('sweep'),hold:g('hold'),owner:g('owner'),
-sta:(t.match(/STA.* ip=(\S+)/)||[])[1]};
+sta:(t.match(/STA.* ip=(\S+)/)||[])[1],mind:g('mind')};
+if(last.mind&&last.mind!=='-'&&document.activeElement!==$('#mind')&&mindURL()!==last.mind){$('#mind').value=last.mind;localStorage.mind=last.mind}
 last.rssi=g('ap_rssi');last.drops=g('http_drops');last.reset=g('reset');last.batt=g('batt_v');last.bmin=g('batt_min');last.blow=g('batt_low');
 const u=+g('up_s');if(u<up)say(`ROBOT RESTARTED (reset=${last.reset}); outputs are OFF`+(/brownout|poweron/.test(last.reset)?
 '\n  power dipped (unless you switched it off): charge the battery; servo start is staggered, see "power"':''));up=u;

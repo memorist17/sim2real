@@ -38,6 +38,7 @@ uint32_t lastPWM = 0, buttonStart = 0;
 enum Owner { NONE, USB, WEB, BUTTON } owner = NONE;
 String ssid, hostname, country = "JP";
 String staSsid, staPass; // optional home/lab network, NVS namespace sesame-net
+String mindUrl; // PC running tools/sesame_mind.py, announced by it (NVS sesame-net "mind")
 int wifiChannel = 1;
 float wifiPower = 8.5;
 const Motion* motion = nullptr;
@@ -228,6 +229,19 @@ String powerCommand(const CommandLine& c) {
   } else return "ERR power | power stagger MS | power low VOLTS | power battery GPIO RATIO|cal VOLTS|off";
   return "OK " + powerStatus() + (stored ? "" : saveError);
 }
+// The PC that runs the mind tells the robot where it is, so the phone page finds it.
+String mindCommand(const CommandLine& c) {
+  if (c.is("mind", 1)) return "mind=" + (mindUrl.length() ? mindUrl : String("-"));
+  if (c.is("mind", 2) && !strcmp(c.words[1], "forget")) {
+    mindUrl = ""; netPrefs.remove("mind"); return "OK MIND forgotten";
+  }
+  if (c.is("mind", 2) && (!strncmp(c.words[1], "http://", 7) || !strncmp(c.words[1], "https://", 8)) &&
+      strlen(c.words[1]) <= 96) {
+    if (mindUrl != c.words[1]) { mindUrl = c.words[1]; netPrefs.putString("mind", mindUrl); }
+    return "OK MIND " + mindUrl;
+  }
+  return "ERR mind | mind http://PC:PORT (<=96 chars) | mind forget";
+}
 String status() {
   String out = "mode=" + String(int(gate.mode)) + " outputs=" + String(gate.enabled) +
     " hub=" + String(ready) + " fault=" + String(fault) + " owner=" + String(int(owner)) +
@@ -236,7 +250,8 @@ String status() {
     " profile=" + PULSE_PROFILE_ID + " stagger_ms=" + String(staggerMs) +
     " batt_v=" + (battery.valid ? String(battery.volts, 2) : "-") +
     " batt_min=" + (battery.valid ? String(battery.minimum, 2) : "-") +
-    " batt_low=" + String(battery.low(batteryLow)) + "\n";
+    " batt_low=" + String(battery.low(batteryLow)) +
+    " mind=" + (mindUrl.length() ? mindUrl : String("-")) + "\n";
   for (int j = 0; j < 8; ++j) if (gate.enabled & (1u << j)) {
     out += "CH" + String(gate.channel(j)) + " current=" + String(gate.current[j], 2) +
       " target=" + String(gate.target[j], 2) + " physical=" + String(gate.physical(j), 2) +
@@ -311,6 +326,7 @@ const char* HELP =
   "power | power stagger MS (0..500; one servo starts per MS, 0 = all at once)\n"
   "power low VOLTS | power battery GPIO RATIO | power battery cal VOLTS | power battery off\n"
   "USB+OFF only: wifi join SSID [PASSWORD] (no spaces) | wifi forget\n"
+  "mind | mind http://PC:PORT | mind forget (the page's sesame_mind URL; saved)\n"
   "Web: /cmd?c=A;B;C runs in order, stops at first ERR.\n"
   "No owner message for 500ms: freeze+hold torque (status hold=1); any owner\n"
   "command resumes; outputs OFF after 600s held. Motions need live heartbeat.\n"
@@ -354,6 +370,7 @@ String command(const char* text, Owner source) {
   if (c.is("show", 1) || c.is("subtrim", 1)) return showCalibration();
   if (c.is("export", 1)) return exportCalibration();
   if (c.is("wifi", 1)) return wifiStatus();
+  if (c.count && !strcmp(c.words[0], "mind")) return mindCommand(c);
   if (c.is("i2c", 1)) return gate.active() ? "ERR off first" : i2cDiagnostic();
   if (c.count && !strcmp(c.words[0], "power")) return powerCommand(c);
   if (c.is("bench", 1)) { benchDisplay = true; return "OK BENCH commanded angles, not feedback"; }
@@ -725,6 +742,7 @@ void setup() {
   if (netPrefs.begin("sesame-net", false)) {
     if (netPrefs.isKey("ssid")) staSsid = netPrefs.getString("ssid");
     if (netPrefs.isKey("pass")) staPass = netPrefs.getString("pass");
+    if (netPrefs.isKey("mind")) mindUrl = netPrefs.getString("mind");
   }
   startWifi();
   Serial.printf("READY Sesame S3 calibration+controller; outputs OFF; reset=%s; help\n", resetReason());
